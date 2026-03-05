@@ -1,10 +1,10 @@
+use crate::ui::{TerminalView, ViewportState};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::widgets::{Block, Borders, Paragraph};
 use speedrun_core::Player;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 type Tui = Terminal<CrosstermBackend<std::io::Stdout>>;
 
@@ -13,6 +13,7 @@ pub struct App {
     pub show_controls: bool,
     pub last_interaction: Instant,
     pub should_quit: bool,
+    viewport: ViewportState,
 }
 
 impl App {
@@ -22,29 +23,38 @@ impl App {
             show_controls,
             last_interaction: Instant::now(),
             should_quit: false,
+            viewport: ViewportState::default(),
         }
     }
 
     pub fn run(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
         let mut last_tick = Instant::now();
+        let mut needs_redraw = true; // render first frame immediately
 
         loop {
-            // Render
-            terminal.draw(|frame| self.render(frame))?;
+            // Render (conditional)
+            if needs_redraw {
+                terminal.draw(|frame| self.render(frame))?;
+                needs_redraw = false;
+            }
 
             // Compute timeout
-            let timeout = self
-                .player
-                .time_to_next_event()
-                .unwrap_or(std::time::Duration::from_millis(100));
+            let timeout = self.compute_timeout();
 
             // Poll for input
             if event::poll(timeout)? {
-                match event::read()? {
-                    Event::Key(key) => self.handle_key(key),
-                    // Resize triggers automatic re-render on next loop iteration
-                    Event::Resize(_, _) => {}
-                    _ => {}
+                match event::read() {
+                    Ok(Event::Key(key)) => {
+                        self.handle_key(key);
+                        needs_redraw = true;
+                    }
+                    Ok(Event::Resize(_, _)) => {
+                        needs_redraw = true;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("crossterm read error: {e}");
+                    }
                 }
             }
 
@@ -54,7 +64,10 @@ impl App {
             last_tick = now;
 
             if self.player.is_playing() {
-                self.player.tick(dt);
+                let changed = self.player.tick(dt);
+                if changed {
+                    needs_redraw = true;
+                }
             }
 
             if self.should_quit {
@@ -62,6 +75,15 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Compute the poll timeout based on time to next playback event.
+    ///
+    /// Falls back to 100ms when paused or at the end of the recording.
+    pub fn compute_timeout(&self) -> Duration {
+        self.player
+            .time_to_next_event()
+            .unwrap_or(Duration::from_millis(100))
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -94,26 +116,24 @@ impl App {
         }
     }
 
-    fn render(&self, frame: &mut Frame) {
+    fn render(&mut self, frame: &mut Frame) {
         let area = frame.size();
 
-        // Placeholder: show recording info text until TerminalView widget is ready
-        let info = format!(
-            "speedrun — {}x{} | {:.1}s / {:.1}s | {} | {:.1}x",
-            self.player.size().0,
-            self.player.size().1,
-            self.player.current_time(),
-            self.player.duration(),
-            if self.player.is_playing() {
-                "playing"
-            } else {
-                "paused"
-            },
-            self.player.speed(),
+        let cursor = self.player.cursor();
+        let (rec_cols, rec_rows) = self.player.size();
+
+        self.viewport.follow_cursor(
+            cursor.col as u16,
+            cursor.row as u16,
+            rec_cols,
+            rec_rows,
+            area.width,
+            area.height,
         );
 
-        let paragraph =
-            Paragraph::new(info).block(Block::default().borders(Borders::ALL).title("speedrun"));
-        frame.render_widget(paragraph, area);
+        let view = TerminalView::new(self.player.screen(), cursor, (rec_cols, rec_rows))
+            .with_scroll(self.viewport.scroll_x, self.viewport.scroll_y);
+
+        frame.render_widget(view, area);
     }
 }
