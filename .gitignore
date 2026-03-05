@@ -22,3 +22,6 @@ debug
 
 # Beads database
 /.beads/*.db
+
+# pit worktrees
+/.worktrees/
