@@ -1,6 +1,7 @@
+mod app;
+
 use clap::Parser;
 use crossterm::{
-    event::KeyModifiers,
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -65,29 +66,6 @@ fn install_panic_hook() {
     }));
 }
 
-fn run(terminal: &mut Tui, _player: speedrun_core::Player, _args: &Args) -> std::io::Result<()> {
-    loop {
-        terminal.draw(|frame| {
-            // Placeholder: just clear the screen
-            let area = frame.size();
-            frame.render_widget(ratatui::widgets::Clear, area);
-        })?;
-
-        // Wait for input, quit on 'q', Esc, or Ctrl-C
-        if crossterm::event::poll(std::time::Duration::from_millis(100))?
-            && let crossterm::event::Event::Key(key) = crossterm::event::read()?
-            && (matches!(
-                key.code,
-                crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc
-            ) || (key.code == crossterm::event::KeyCode::Char('c')
-                && key.modifiers.contains(KeyModifiers::CONTROL)))
-        {
-            break;
-        }
-    }
-    Ok(())
-}
-
 fn main() {
     install_panic_hook();
 
@@ -127,8 +105,8 @@ fn main() {
         std::process::exit(1);
     });
 
-    // Run the app (placeholder — just clear screen and wait for 'q')
-    let result = run(&mut terminal, player, &args);
+    let mut app = app::App::new(player, !args.no_controls);
+    let result = app.run(&mut terminal);
 
     // Always restore terminal, even if run() returned an error
     let _ = restore_terminal(&mut terminal);
