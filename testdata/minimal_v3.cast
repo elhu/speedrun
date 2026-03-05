@@ -1,4 +1,4 @@
-{"version": 3, "width": 80, "height": 24}
+{"version": 3, "term": {"cols": 80, "rows": 24}}
 [0.5, "o", "$ hello\r\n"]
 [0.7, "o", "world\r\n"]
 [0.8, "o", "$ exit\r\n"]
