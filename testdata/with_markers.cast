@@ -1,0 +1,9 @@
+{"version": 2, "width": 80, "height": 24}
+[0.5, "o", "Starting application...\r\n"]
+[1.0, "o", "Loading configuration\r\n"]
+[3.0, "m", "chapter-1"]
+[3.5, "o", "Chapter 1: Basic setup\r\n"]
+[5.0, "o", "Installing dependencies...\r\n"]
+[7.0, "m", "chapter-2"]
+[7.5, "o", "Chapter 2: Running tests\r\n"]
+[8.0, "o", "All tests passed!\r\n"]

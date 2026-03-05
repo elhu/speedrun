@@ -1,0 +1,5 @@
+{"version": 2, "width": 80, "height": 24}
+[0.5, "o"]
+not json at all
+[null, "o", "x"]
+[1.5, "o", "valid event after bad ones"]

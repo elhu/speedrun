@@ -1,0 +1,10 @@
+{"version": 2, "width": 80, "height": 24}
+[0.5, "o", "$ vim file.txt\r\n"]
+[1.0, "o", "\u001b[?1049h"]
+[1.1, "o", "VIM - Vi IMproved\r\n"]
+[1.5, "o", "version 8.2.0001\r\n"]
+[2.0, "o", "Hello from alternate buffer!\r\n"]
+[3.0, "o", ":q!\r\n"]
+[3.5, "o", "\u001b[?1049l"]
+[4.0, "o", "$ echo 'Back to normal'\r\n"]
+[4.1, "o", "Back to normal\r\n"]

@@ -1,0 +1,7 @@
+{"version": 2, "width": 80, "height": 24}
+[0.5, "o", "$ ls\r\n"]
+[1.0, "o", "file1.txt  file2.txt  file3.txt\r\n"]
+[2.0, "r", "120x40"]
+[2.5, "o", "Terminal resized to 120x40\r\n"]
+[3.0, "o", "$ echo 'Now we have more space'\r\n"]
+[3.5, "o", "Now we have more space\r\n"]

@@ -1,0 +1,6 @@
+{"version": 2, "width": 80, "height": 24, "idle_time_limit": 2}
+[1.0, "o", "$ echo 'Starting task'\r\n"]
+[1.1, "o", "Starting task\r\n"]
+[35.0, "o", "$ echo 'After 34 second gap'\r\n"]
+[35.1, "o", "After 34 second gap\r\n"]
+[36.0, "o", "$ exit\r\n"]

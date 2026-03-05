@@ -1,0 +1,5 @@
+{"version": 3, "width": 80, "height": 24}
+[0.5, "o", "$ hello\r\n"]
+[0.7, "o", "world\r\n"]
+[0.8, "o", "$ exit\r\n"]
+[0.1, "o", "logout\r\n"]
