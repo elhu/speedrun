@@ -672,6 +672,7 @@ dependencies = [
  "avt",
  "insta",
  "pretty_assertions",
+ "rgb",
  "serde",
  "serde_json",
  "tempfile",
