@@ -95,3 +95,201 @@ impl CursorState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn basic_round_trip() {
+        let mut vt = create_vt(10, 4);
+        vt.feed_str("hello\r\nworld");
+
+        let original_cursor = CursorState::from_vt(&vt);
+        let snapshot = TerminalSnapshot::capture(&vt);
+        let restored = snapshot.restore();
+
+        // Verify line text matches line-by-line
+        let orig_view = vt.view();
+        let rest_view = restored.view();
+        for row in 0..4 {
+            assert_eq!(
+                orig_view[row].text(),
+                rest_view[row].text(),
+                "line {row} text mismatch"
+            );
+        }
+
+        // Verify cursor position matches
+        let restored_cursor = CursorState::from_vt(&restored);
+        assert_eq!(original_cursor, restored_cursor);
+    }
+
+    #[test]
+    fn colors_and_attributes() {
+        let mut vt = create_vt(40, 4);
+        // bold + red fg + green bg + inverse, then some text
+        vt.feed_str("\x1b[1m\x1b[31m\x1b[42m\x1b[7mStyled Text");
+
+        let snapshot = TerminalSnapshot::capture(&vt);
+        let restored = snapshot.restore();
+
+        // Verify text content
+        let rest_view = restored.view();
+        let line = &rest_view[0];
+        assert!(line.text().starts_with("Styled Text"));
+
+        // Verify attributes on the restored cells
+        let cells: Vec<(char, avt::Pen)> = line.cells().collect();
+        // Check the first character 'S'
+        let (ch, ref pen) = cells[0];
+        assert_eq!(ch, 'S');
+        assert!(pen.is_bold(), "expected bold");
+        assert_eq!(
+            pen.foreground(),
+            Some(avt::Color::Indexed(1)),
+            "expected red foreground (indexed 1)"
+        );
+        assert_eq!(
+            pen.background(),
+            Some(avt::Color::Indexed(2)),
+            "expected green background (indexed 2)"
+        );
+        assert!(pen.is_inverse(), "expected inverse");
+    }
+
+    #[test]
+    fn cursor_state() {
+        // Default position on a fresh Vt
+        let vt = create_vt(80, 24);
+        let cursor = CursorState::from_vt(&vt);
+        assert_eq!(cursor.col, 0);
+        assert_eq!(cursor.row, 0);
+        assert!(cursor.visible);
+
+        // After feeding text, cursor moves
+        let mut vt = create_vt(80, 24);
+        vt.feed_str("abcde\r\nfg");
+        let cursor = CursorState::from_vt(&vt);
+        assert_eq!(cursor.col, 2);
+        assert_eq!(cursor.row, 1);
+        assert!(cursor.visible);
+
+        // Hide cursor
+        let mut vt = create_vt(80, 24);
+        vt.feed_str("\x1b[?25l");
+        let snapshot = TerminalSnapshot::capture(&vt);
+        let restored = snapshot.restore();
+        let cursor = CursorState::from_vt(&restored);
+        assert!(!cursor.visible, "cursor should be hidden after \\x1b[?25l");
+
+        // Show cursor
+        let mut vt = create_vt(80, 24);
+        vt.feed_str("\x1b[?25l\x1b[?25h");
+        let snapshot = TerminalSnapshot::capture(&vt);
+        let restored = snapshot.restore();
+        let cursor = CursorState::from_vt(&restored);
+        assert!(cursor.visible, "cursor should be visible after \\x1b[?25h");
+    }
+
+    #[test]
+    fn alternate_buffer() {
+        // Enter alternate buffer and write text
+        let mut vt = create_vt(40, 10);
+        vt.feed_str("\x1b[?1049h");
+        vt.feed_str("alt buffer content");
+        let snapshot = TerminalSnapshot::capture(&vt);
+        let restored = snapshot.restore();
+
+        let rest_view = restored.view();
+        assert!(
+            rest_view[0].text().starts_with("alt buffer content"),
+            "alternate buffer content should be preserved after capture/restore"
+        );
+
+        // Exit alternate buffer to primary, write text there
+        let mut vt = create_vt(40, 10);
+        vt.feed_str("\x1b[?1049h");
+        vt.feed_str("alt text");
+        vt.feed_str("\x1b[?1049l");
+        vt.feed_str("primary content");
+
+        let snapshot = TerminalSnapshot::capture(&vt);
+        let restored = snapshot.restore();
+
+        let rest_view = restored.view();
+        // When primary is active, we should see primary content
+        assert!(
+            rest_view[0].text().starts_with("primary content"),
+            "primary buffer content should be preserved"
+        );
+
+        // Note: Alternate buffer content is intentionally not captured when
+        // primary is active — entering alternate screen mode always starts
+        // with a fresh buffer. This is correct behavior per the VT protocol:
+        // switching to the alternate screen saves the primary state and
+        // presents a blank screen, so there is no need to persist alternate
+        // content across snapshots taken from the primary buffer.
+    }
+
+    #[test]
+    fn resize() {
+        let mut vt = create_vt(80, 24);
+        // xtwinops: \x1b[8;rows;cols t — note rows;cols order
+        vt.feed_str("\x1b[8;40;120t");
+        vt.feed_str("after resize");
+
+        let snapshot = TerminalSnapshot::capture(&vt);
+        assert_eq!(
+            snapshot.width(),
+            120,
+            "snapshot width should be 120 after resize"
+        );
+        assert_eq!(
+            snapshot.height(),
+            40,
+            "snapshot height should be 40 after resize"
+        );
+
+        let restored = snapshot.restore();
+        assert_eq!(
+            restored.size(),
+            (120, 40),
+            "restored Vt size should be (120, 40)"
+        );
+
+        let rest_view = restored.view();
+        assert!(
+            rest_view[0].text().starts_with("after resize"),
+            "text content should be preserved after resize round-trip"
+        );
+    }
+
+    #[test]
+    fn fresh_vt_empty_recording() {
+        let vt = create_vt(80, 24);
+        let original_cursor = CursorState::from_vt(&vt);
+
+        let snapshot = TerminalSnapshot::capture(&vt);
+        let restored = snapshot.restore();
+
+        // Verify all lines are blank
+        let orig_view = vt.view();
+        let rest_view = restored.view();
+        for row in 0..24 {
+            assert_eq!(
+                orig_view[row].text().trim(),
+                rest_view[row].text().trim(),
+                "line {row} should be blank"
+            );
+        }
+
+        // Verify cursor at default position
+        let restored_cursor = CursorState::from_vt(&restored);
+        assert_eq!(original_cursor, restored_cursor);
+        assert_eq!(restored_cursor.col, 0);
+        assert_eq!(restored_cursor.row, 0);
+        assert!(restored_cursor.visible);
+    }
+}
