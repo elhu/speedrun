@@ -656,11 +656,13 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 name = "speedrun"
 version = "0.1.0"
 dependencies = [
+ "avt",
  "clap",
  "crossterm",
  "insta",
  "pretty_assertions",
  "ratatui",
+ "rgb",
  "speedrun-core",
  "tempfile",
 ]
