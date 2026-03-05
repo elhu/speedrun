@@ -1,4 +1,11 @@
 use clap::Parser;
+use crossterm::{
+    event::KeyModifiers,
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 /// A modern terminal session player with instant seeking.
 #[derive(Parser, Debug)]
@@ -30,7 +37,60 @@ struct Args {
     no_controls: bool,
 }
 
+type Tui = Terminal<CrosstermBackend<std::io::Stdout>>;
+
+fn setup_terminal() -> std::io::Result<Tui> {
+    enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let terminal = Terminal::new(backend)?;
+    Ok(terminal)
+}
+
+fn restore_terminal(terminal: &mut Tui) -> std::io::Result<()> {
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+    Ok(())
+}
+
+fn install_panic_hook() {
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        // Best-effort terminal restoration
+        let _ = disable_raw_mode();
+        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+        original_hook(panic_info);
+    }));
+}
+
+fn run(terminal: &mut Tui, _player: speedrun_core::Player, _args: &Args) -> std::io::Result<()> {
+    loop {
+        terminal.draw(|frame| {
+            // Placeholder: just clear the screen
+            let area = frame.size();
+            frame.render_widget(ratatui::widgets::Clear, area);
+        })?;
+
+        // Wait for input, quit on 'q', Esc, or Ctrl-C
+        if crossterm::event::poll(std::time::Duration::from_millis(100))?
+            && let crossterm::event::Event::Key(key) = crossterm::event::read()?
+            && (matches!(
+                key.code,
+                crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc
+            ) || (key.code == crossterm::event::KeyCode::Char('c')
+                && key.modifiers.contains(KeyModifiers::CONTROL)))
+        {
+            break;
+        }
+    }
+    Ok(())
+}
+
 fn main() {
+    install_panic_hook();
+
     let args = Args::parse();
 
     let file = std::fs::File::open(&args.file).unwrap_or_else(|e| {
@@ -62,10 +122,19 @@ fn main() {
 
     player.play();
 
-    println!(
-        "Loaded: {}x{}, duration {:.1}s",
-        player.size().0,
-        player.size().1,
-        player.duration()
-    );
+    let mut terminal = setup_terminal().unwrap_or_else(|e| {
+        eprintln!("Failed to initialize terminal: {e}");
+        std::process::exit(1);
+    });
+
+    // Run the app (placeholder — just clear screen and wait for 'q')
+    let result = run(&mut terminal, player, &args);
+
+    // Always restore terminal, even if run() returned an error
+    let _ = restore_terminal(&mut terminal);
+
+    if let Err(e) = result {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
 }
