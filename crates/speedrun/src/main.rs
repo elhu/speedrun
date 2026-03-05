@@ -1,4 +1,5 @@
 mod app;
+pub mod ui;
 
 use clap::Parser;
 use crossterm::{
