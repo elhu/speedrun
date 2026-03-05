@@ -1,0 +1,46 @@
+---
+source: crates/speedrun-core/src/parser.rs
+expression: recording
+---
+Recording {
+    header: Header {
+        version: 2,
+        width: 80,
+        height: 24,
+        timestamp: None,
+        idle_time_limit: None,
+        title: None,
+        env: None,
+    },
+    events: [
+        Event {
+            time: 0.5,
+            event_type: Output,
+            data: Text(
+                "$ hello\r\n",
+            ),
+        },
+        Event {
+            time: 1.2,
+            event_type: Output,
+            data: Text(
+                "world\r\n",
+            ),
+        },
+        Event {
+            time: 2.0,
+            event_type: Output,
+            data: Text(
+                "$ exit\r\n",
+            ),
+        },
+        Event {
+            time: 2.1,
+            event_type: Output,
+            data: Text(
+                "logout\r\n",
+            ),
+        },
+    ],
+    markers: [],
+}
