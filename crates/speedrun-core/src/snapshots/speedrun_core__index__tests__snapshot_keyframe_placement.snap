@@ -1,0 +1,23 @@
+---
+source: crates/speedrun-core/src/index.rs
+assertion_line: 473
+expression: keyframe_tuples
+---
+[
+    (
+        0.0,
+        0,
+    ),
+    (
+        6.0,
+        2,
+    ),
+    (
+        12.0,
+        4,
+    ),
+    (
+        15.0,
+        5,
+    ),
+]
