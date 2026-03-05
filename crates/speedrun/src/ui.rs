@@ -182,3 +182,170 @@ impl Widget for TerminalView<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
+    use rgb::RGB8;
+
+    // ── Color mapping tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn map_color_none_is_reset() {
+        assert_eq!(map_color(None), Color::Reset);
+    }
+
+    #[test]
+    fn map_color_indexed() {
+        assert_eq!(map_color(Some(avt::Color::Indexed(1))), Color::Indexed(1));
+        assert_eq!(map_color(Some(avt::Color::Indexed(0))), Color::Indexed(0));
+        assert_eq!(
+            map_color(Some(avt::Color::Indexed(255))),
+            Color::Indexed(255)
+        );
+    }
+
+    #[test]
+    fn map_color_rgb() {
+        let rgb = RGB8 {
+            r: 255,
+            g: 128,
+            b: 0,
+        };
+        assert_eq!(
+            map_color(Some(avt::Color::RGB(rgb))),
+            Color::Rgb(255, 128, 0)
+        );
+    }
+
+    // ── Attribute mapping tests ──────────────────────────────────────────────
+
+    #[test]
+    fn map_modifiers_all_attributes() {
+        let mut vt = speedrun_core::create_vt(10, 1);
+        // Italic(3), Underline(4), Blink(5), Inverse(7), Strikethrough(9)
+        vt.feed_str("\x1b[3;4;5;7;9mX");
+        let line = &vt.view()[0];
+        let (_, pen) = line.cells().next().unwrap();
+        let mods = map_modifiers(&pen);
+        assert!(mods.contains(Modifier::ITALIC));
+        assert!(mods.contains(Modifier::UNDERLINED));
+        assert!(mods.contains(Modifier::SLOW_BLINK));
+        assert!(mods.contains(Modifier::REVERSED));
+        assert!(mods.contains(Modifier::CROSSED_OUT));
+
+        // Test bold separately (bold and faint are mutually exclusive in avt's intensity enum)
+        let mut vt2 = speedrun_core::create_vt(10, 1);
+        vt2.feed_str("\x1b[1mX");
+        let (_, pen2) = vt2.view()[0].cells().next().unwrap();
+        assert!(map_modifiers(&pen2).contains(Modifier::BOLD));
+
+        // Test faint
+        let mut vt3 = speedrun_core::create_vt(10, 1);
+        vt3.feed_str("\x1b[2mX");
+        let (_, pen3) = vt3.view()[0].cells().next().unwrap();
+        assert!(map_modifiers(&pen3).contains(Modifier::DIM));
+    }
+
+    // ── Cursor rendering tests ───────────────────────────────────────────────
+
+    #[test]
+    fn cursor_visible_renders_reversed() {
+        let mut vt = speedrun_core::create_vt(5, 1);
+        vt.feed_str("AB");
+        let cursor = speedrun_core::CursorState {
+            col: 2,
+            row: 0,
+            visible: true,
+        };
+        let view = TerminalView::new(vt.view(), cursor, (5, 1));
+
+        let area = Rect::new(0, 0, 5, 1);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+
+        assert!(buf.get(2, 0).modifier.contains(Modifier::REVERSED));
+        assert!(!buf.get(0, 0).modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn cursor_hidden_not_rendered() {
+        let mut vt = speedrun_core::create_vt(5, 1);
+        vt.feed_str("AB");
+        let cursor = speedrun_core::CursorState {
+            col: 2,
+            row: 0,
+            visible: false,
+        };
+        let view = TerminalView::new(vt.view(), cursor, (5, 1));
+
+        let area = Rect::new(0, 0, 5, 1);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+
+        assert!(!buf.get(2, 0).modifier.contains(Modifier::REVERSED));
+    }
+
+    // ── Viewport scroll offset tests ─────────────────────────────────────────
+
+    #[test]
+    fn viewport_no_scroll_when_fits() {
+        let mut vp = ViewportState::default();
+        vp.follow_cursor(5, 5, 80, 24, 100, 30);
+        assert_eq!(vp.scroll_x, 0);
+        assert_eq!(vp.scroll_y, 0);
+    }
+
+    #[test]
+    fn viewport_scrolls_to_follow_cursor_right() {
+        let mut vp = ViewportState::default();
+        vp.follow_cursor(60, 0, 80, 24, 40, 24);
+        assert!(vp.scroll_x > 0);
+        assert!(vp.scroll_x + 40 > 60);
+    }
+
+    #[test]
+    fn viewport_scrolls_to_follow_cursor_down() {
+        let mut vp = ViewportState::default();
+        vp.follow_cursor(0, 40, 80, 50, 80, 24);
+        assert!(vp.scroll_y > 0);
+        assert!(vp.scroll_y + 24 > 40);
+    }
+
+    #[test]
+    fn viewport_clamps_scroll_at_end() {
+        let mut vp = ViewportState::default();
+        vp.follow_cursor(79, 49, 80, 50, 40, 24);
+        assert!(vp.scroll_x <= 40);
+        assert!(vp.scroll_y <= 26);
+    }
+
+    // ── End-to-end snapshot test ─────────────────────────────────────────────
+
+    #[test]
+    fn snapshot_render_minimal_v2() {
+        let file = std::fs::File::open("../../testdata/minimal_v2.cast").unwrap();
+        let mut player = speedrun_core::Player::load(file).unwrap();
+        player.seek(player.duration());
+
+        let (cols, rows) = player.size();
+        let view = TerminalView::new(player.screen(), player.cursor(), (cols, rows));
+
+        let area = Rect::new(0, 0, cols, rows);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+
+        let text_lines: Vec<String> = (0..rows)
+            .map(|y| {
+                (0..cols)
+                    .map(|x| buf.get(x, y).symbol().to_string())
+                    .collect()
+            })
+            .collect();
+
+        insta::assert_debug_snapshot!(text_lines);
+    }
+}

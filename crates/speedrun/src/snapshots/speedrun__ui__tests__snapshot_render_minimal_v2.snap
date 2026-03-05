@@ -1,0 +1,30 @@
+---
+source: crates/speedrun/src/ui.rs
+expression: text_lines
+---
+[
+    "$ hello                                                                         ",
+    "world                                                                           ",
+    "$ exit                                                                          ",
+    "logout                                                                          ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+]
