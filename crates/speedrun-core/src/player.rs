@@ -747,4 +747,406 @@ mod tests {
         assert_eq!(cols, 120);
         assert_eq!(rows, 40);
     }
+
+    // -----------------------------------------------------------------------
+    // Load error cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn load_empty_bytes_returns_error() {
+        let result = Player::load(Cursor::new(b""));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, PlayerError::Parse(_)),
+            "expected Parse error for empty bytes, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_binary_garbage_returns_error() {
+        let garbage: Vec<u8> = (0..256).map(|i| (i % 256) as u8).collect();
+        let result = Player::load(Cursor::new(garbage));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, PlayerError::Parse(_)),
+            "expected Parse error for binary garbage, got {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Seek tests — screen content verification
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn seek_zero_cursor_at_origin_screen_blank() {
+        let mut player = load_file("minimal_v2.cast");
+        // Seek to end first, then back to 0
+        player.seek(player.duration());
+        player.seek(0.0);
+
+        assert_f64_eq(player.current_time(), 0.0);
+
+        let cursor = player.cursor();
+        assert_eq!(cursor.col, 0);
+        assert_eq!(cursor.row, 0);
+
+        // Screen should be blank at time 0
+        let view = player.screen();
+        for line in view {
+            assert!(
+                line.text().trim().is_empty(),
+                "expected blank screen at t=0, got: {:?}",
+                line.text()
+            );
+        }
+    }
+
+    #[test]
+    fn seek_to_last_event_shows_expected_output() {
+        let mut player = load_file("minimal_v2.cast");
+        // Last event at t=2.1 outputs "logout\r\n"
+        // After all events: line 0 = "$ hello", line 1 = "world",
+        // line 2 = "$ exit", line 3 = "logout"
+        player.seek(player.duration());
+
+        let view = player.screen();
+        assert!(
+            view[0].text().starts_with("$ hello"),
+            "expected line 0 to start with '$ hello', got: {:?}",
+            view[0].text()
+        );
+        assert!(
+            view[1].text().starts_with("world"),
+            "expected line 1 to start with 'world', got: {:?}",
+            view[1].text()
+        );
+        assert!(
+            view[2].text().starts_with("$ exit"),
+            "expected line 2 to start with '$ exit', got: {:?}",
+            view[2].text()
+        );
+        assert!(
+            view[3].text().starts_with("logout"),
+            "expected line 3 to start with 'logout', got: {:?}",
+            view[3].text()
+        );
+    }
+
+    #[test]
+    fn seek_between_events_reflects_prior_state() {
+        let mut player = load_file("minimal_v2.cast");
+        // Events: [0.5, "$ hello\r\n"], [1.2, "world\r\n"], [2.0, "$ exit\r\n"], [2.1, "logout\r\n"]
+        // Seek to 1.5 — should include events at 0.5 and 1.2 but NOT 2.0
+        player.seek(1.5);
+
+        let view = player.screen();
+        assert!(
+            view[0].text().starts_with("$ hello"),
+            "expected '$ hello' on line 0 at t=1.5, got: {:?}",
+            view[0].text()
+        );
+        assert!(
+            view[1].text().starts_with("world"),
+            "expected 'world' on line 1 at t=1.5, got: {:?}",
+            view[1].text()
+        );
+        // Line 2 should be blank (event at 2.0 not yet processed)
+        assert!(
+            view[2].text().trim().is_empty(),
+            "expected blank line 2 at t=1.5, got: {:?}",
+            view[2].text()
+        );
+    }
+
+    #[test]
+    fn seek_forward_then_backward_consistency() {
+        let mut player = load_file("minimal_v2.cast");
+
+        // Seek to end, capture screen
+        player.seek(player.duration());
+        let end_screen: Vec<String> = player
+            .screen()
+            .iter()
+            .map(|l| l.text().to_string())
+            .collect();
+
+        // Seek to middle
+        player.seek(1.5);
+        let mid_screen: Vec<String> = player
+            .screen()
+            .iter()
+            .map(|l| l.text().to_string())
+            .collect();
+
+        // Seek back to end — should match original end screen
+        player.seek(player.duration());
+        let end_screen2: Vec<String> = player
+            .screen()
+            .iter()
+            .map(|l| l.text().to_string())
+            .collect();
+        assert_eq!(
+            end_screen, end_screen2,
+            "seek forward→backward should produce same state"
+        );
+
+        // Seek back to middle — should match original mid screen
+        player.seek(1.5);
+        let mid_screen2: Vec<String> = player
+            .screen()
+            .iter()
+            .map(|l| l.text().to_string())
+            .collect();
+        assert_eq!(
+            mid_screen, mid_screen2,
+            "seek backward should produce same state as first seek"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tick tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tick_advances_time_and_feeds_events() {
+        let mut player = load_file("minimal_v2.cast");
+        player.play();
+
+        // First event at effective time 0.5. Tick 0.6s to pass it.
+        let changed = player.tick(0.6);
+        assert!(changed, "tick should return true when events are processed");
+        assert_f64_eq(player.current_time(), 0.6);
+
+        // Screen should show output from the first event
+        let view = player.screen();
+        assert!(
+            view[0].text().starts_with("$ hello"),
+            "expected '$ hello' after tick past t=0.5, got: {:?}",
+            view[0].text()
+        );
+    }
+
+    #[test]
+    fn tick_at_double_speed() {
+        let mut player = load_file("minimal_v2.cast");
+        player.play();
+        player.set_speed(2.0);
+
+        // Tick 0.3s wall-clock at 2× speed → 0.6s effective time
+        player.tick(0.3);
+        assert_f64_eq(player.current_time(), 0.6);
+    }
+
+    #[test]
+    fn tick_when_paused_returns_false() {
+        let mut player = load_file("minimal_v2.cast");
+        // Player starts paused
+        assert!(!player.is_playing());
+
+        let before = player.current_time();
+        let changed = player.tick(1.0);
+        assert!(!changed, "tick when paused should return false");
+        assert_f64_eq(player.current_time(), before);
+    }
+
+    #[test]
+    fn tick_reaching_end_auto_pauses() {
+        let mut player = load_file("minimal_v2.cast");
+        player.play();
+
+        // Tick past the entire duration
+        let changed = player.tick(player.duration() + 10.0);
+        assert!(changed, "tick reaching end should return true");
+        assert!(!player.is_playing(), "player should auto-pause at end");
+        assert_f64_eq(player.current_time(), player.duration());
+
+        // Subsequent tick should return false
+        let changed2 = player.tick(1.0);
+        assert!(!changed2, "tick after auto-pause should return false");
+    }
+
+    // -----------------------------------------------------------------------
+    // time_to_next_event tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn time_to_next_event_at_start_playing() {
+        let mut player = load_file("minimal_v2.cast");
+        player.play();
+
+        // At time 0.0, playing at 1×, first event at effective time 0.5
+        let ttne = player.time_to_next_event();
+        assert!(ttne.is_some(), "should return Some when playing");
+        let dur = ttne.unwrap();
+        assert!(
+            (dur.as_secs_f64() - 0.5).abs() < EPSILON,
+            "expected ~0.5s to next event, got {:?}",
+            dur
+        );
+    }
+
+    #[test]
+    fn time_to_next_event_at_double_speed() {
+        let mut player = load_file("minimal_v2.cast");
+        player.play();
+        player.set_speed(2.0);
+
+        // At time 0.0, 2× speed, first event at 0.5 → wall-clock 0.25
+        let ttne = player.time_to_next_event();
+        assert!(ttne.is_some());
+        let dur = ttne.unwrap();
+        assert!(
+            (dur.as_secs_f64() - 0.25).abs() < EPSILON,
+            "expected ~0.25s at 2× speed, got {:?}",
+            dur
+        );
+    }
+
+    #[test]
+    fn time_to_next_event_when_paused() {
+        let player = load_file("minimal_v2.cast");
+        // Player starts paused
+        assert!(player.time_to_next_event().is_none());
+    }
+
+    #[test]
+    fn time_to_next_event_at_end() {
+        let mut player = load_file("minimal_v2.cast");
+        player.play();
+        // Advance to end
+        player.tick(player.duration() + 10.0);
+        // Now at end and auto-paused
+        assert!(player.time_to_next_event().is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Stepping tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn step_forward_from_start_while_paused() {
+        let mut player = load_file("minimal_v2.cast");
+        assert!(!player.is_playing());
+
+        let stepped = player.step_forward();
+        assert!(
+            stepped,
+            "step_forward should return true when there are output events"
+        );
+
+        // Should advance to first output event at effective time 0.5
+        assert_f64_eq(player.current_time(), 0.5);
+
+        // Screen should show the first event's output
+        let view = player.screen();
+        assert!(
+            view[0].text().starts_with("$ hello"),
+            "expected '$ hello' after step_forward, got: {:?}",
+            view[0].text()
+        );
+    }
+
+    #[test]
+    fn step_forward_skips_marker_events() {
+        let mut player = load_file("with_markers.cast");
+        assert!(!player.is_playing());
+
+        // with_markers.cast events:
+        // [0] t=0.5 output "Starting application...\r\n"
+        // [1] t=1.0 output "Loading configuration\r\n"
+        // [2] t=3.0 marker "chapter-1"
+        // [3] t=3.5 output "Chapter 1: Basic setup\r\n"
+        // ...
+
+        // Step 1: first output event
+        player.step_forward();
+        assert_f64_eq(player.current_time(), 0.5);
+
+        // Step 2: second output event
+        player.step_forward();
+        assert_f64_eq(player.current_time(), 1.0);
+
+        // Step 3: should skip marker at 3.0, land on output at 3.5
+        player.step_forward();
+        assert_f64_eq(player.current_time(), 3.5);
+    }
+
+    #[test]
+    fn step_forward_at_end_returns_false() {
+        let mut player = load_file("minimal_v2.cast");
+
+        // Seek to end
+        player.seek(player.duration());
+
+        let stepped = player.step_forward();
+        assert!(!stepped, "step_forward at end should return false");
+    }
+
+    #[test]
+    fn step_backward_from_mid_recording() {
+        let mut player = load_file("minimal_v2.cast");
+
+        // Seek to between events 1 (t=1.2) and 2 (t=2.0).
+        // This positions current_event_index past events 0 and 1.
+        player.seek(1.5);
+        assert_f64_eq(player.current_time(), 1.5);
+
+        // step_backward should find the last output event before current_event_index,
+        // which is event index 1 at t=1.2.
+        let stepped = player.step_backward();
+        assert!(stepped, "step_backward should return true");
+        assert_f64_eq(player.current_time(), 1.2);
+    }
+
+    #[test]
+    fn step_backward_at_start_returns_false() {
+        let player = load_file("minimal_v2.cast");
+        // current_event_index is 0, so step_backward should return false
+        let mut player = player;
+        let stepped = player.step_backward();
+        assert!(!stepped, "step_backward at start should return false");
+    }
+
+    #[test]
+    fn step_forward_while_playing_returns_false() {
+        let mut player = load_file("minimal_v2.cast");
+        player.play();
+        assert!(player.is_playing());
+
+        let stepped = player.step_forward();
+        assert!(!stepped, "step_forward while playing should return false");
+    }
+
+    #[test]
+    fn step_backward_while_playing_returns_false() {
+        let mut player = load_file("minimal_v2.cast");
+        player.play();
+        assert!(player.is_playing());
+
+        let stepped = player.step_backward();
+        assert!(!stepped, "step_backward while playing should return false");
+    }
+
+    // -----------------------------------------------------------------------
+    // Insta snapshot test — full pipeline
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn snapshot_screen_at_end_of_minimal_v2() {
+        let mut player = load_file("minimal_v2.cast");
+        player.seek(player.duration());
+
+        // Collect all non-empty screen lines as text
+        let screen_text: Vec<String> = player
+            .screen()
+            .iter()
+            .map(|line| line.text().trim_end().to_string())
+            .filter(|text| !text.is_empty())
+            .collect();
+
+        // This locks down the full pipeline: parse → time map → index → seek → render
+        insta::assert_debug_snapshot!(screen_text);
+    }
 }

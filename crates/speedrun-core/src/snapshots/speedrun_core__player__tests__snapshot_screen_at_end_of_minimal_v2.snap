@@ -1,0 +1,11 @@
+---
+source: crates/speedrun-core/src/player.rs
+assertion_line: 1124
+expression: screen_text
+---
+[
+    "$ hello",
+    "world",
+    "$ exit",
+    "logout",
+]
