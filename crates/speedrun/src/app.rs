@@ -137,3 +137,90 @@ impl App {
         frame.render_widget(view, area);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn testdata_path(name: &str) -> std::path::PathBuf {
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.push("../../testdata");
+        p.push(name);
+        p
+    }
+
+    fn load_player(name: &str) -> speedrun_core::Player {
+        let file = std::fs::File::open(testdata_path(name)).unwrap();
+        speedrun_core::Player::load(file).unwrap()
+    }
+
+    // ── Render path integration test ─────────────────────────────────────────
+
+    #[test]
+    fn render_path_shows_terminal_content() {
+        // Load the recording and seek to the end (known screen state)
+        let mut player = load_player("minimal_v2.cast");
+        player.seek(player.duration());
+
+        // Get recording dimensions for the backend
+        let (cols, rows) = player.size();
+
+        // Construct the App
+        let mut app = App::new(player, true);
+
+        // Create a TestBackend terminal sized to the recording dimensions
+        let backend = TestBackend::new(cols, rows);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // Render via terminal.draw() - exercises the full chain:
+        // player screen state → viewport follow_cursor → TerminalView → buffer
+        terminal.draw(|f| app.render(f)).unwrap();
+
+        // Verify row 0 starts with "$ hello"
+        let buf = terminal.backend().buffer();
+        let cell_text: String = (0..7).map(|x| buf.get(x, 0).symbol().to_string()).collect();
+        assert_eq!(cell_text, "$ hello");
+    }
+
+    // ── compute_timeout tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn compute_timeout_paused_returns_100ms() {
+        // Load a file, don't call play() — player starts paused
+        let player = load_player("minimal_v2.cast");
+        let app = App::new(player, true);
+
+        // When paused, time_to_next_event() returns None → fallback 100ms
+        assert_eq!(app.compute_timeout(), Duration::from_millis(100));
+    }
+
+    #[test]
+    fn compute_timeout_playing_returns_event_driven_duration() {
+        // Load a file and start playing
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+
+        // At t=0 playing at 1×, first event is at 0.5s → time_to_next_event ≈ 0.5s
+        let expected = player.time_to_next_event().unwrap();
+        let app = App::new(player, true);
+
+        assert_eq!(app.compute_timeout(), expected);
+    }
+
+    #[test]
+    fn compute_timeout_at_end_returns_100ms() {
+        // Load a file, play, tick past the end — player auto-pauses
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        // Advance past the entire duration
+        player.tick(player.duration() + 10.0);
+        // Player should now be auto-paused
+        assert!(!player.is_playing());
+
+        let app = App::new(player, true);
+        // time_to_next_event() returns None when paused → fallback 100ms
+        assert_eq!(app.compute_timeout(), Duration::from_millis(100));
+    }
+}
