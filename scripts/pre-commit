@@ -1,0 +1,38 @@
+#!/bin/bash
+#
+# Pre-commit hook that runs formatting, linting, and testing checks.
+# If any step fails, the commit is aborted with a clear message.
+#
+
+set -e
+
+echo "🔍 Running pre-commit checks..."
+
+# 1. Check code formatting
+echo "📝 Checking code formatting..."
+if ! cargo fmt --check; then
+    echo "❌ Code formatting check failed!"
+    echo "   Run 'cargo fmt' to fix formatting issues."
+    exit 1
+fi
+echo "✅ Code formatting check passed"
+
+# 2. Check clippy lints
+echo "🧹 Running clippy lints..."
+if ! cargo clippy --workspace -- -D warnings; then
+    echo "❌ Clippy lint check failed!"
+    echo "   Fix the lint warnings above before committing."
+    exit 1
+fi
+echo "✅ Clippy lint check passed"
+
+# 3. Run tests
+echo "🧪 Running tests..."
+if ! cargo test --workspace; then
+    echo "❌ Tests failed!"
+    echo "   Fix the failing tests before committing."
+    exit 1
+fi
+echo "✅ All tests passed"
+
+echo "🎉 All pre-commit checks passed! Proceeding with commit."
