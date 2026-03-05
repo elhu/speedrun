@@ -1,0 +1,19 @@
+[package]
+name = "speedrun"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "speedrun"
+path = "src/main.rs"
+
+[dependencies]
+speedrun-core = { path = "../speedrun-core" }
+ratatui.workspace = true
+crossterm.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+tempfile.workspace = true
+pretty_assertions.workspace = true
