@@ -34,9 +34,9 @@ pub struct KeyframeIndex {
 impl KeyframeIndex {
     /// Build a keyframe index by replaying all events through a virtual terminal.
     ///
-    /// Captures snapshots at [`KEYFRAME_INTERVAL`] intervals in effective time.
+    /// Captures snapshots at `interval` seconds in effective time.
     /// Empty recordings produce an empty index.
-    pub fn build(recording: &Recording, time_map: &TimeMap) -> Self {
+    pub fn build(recording: &Recording, time_map: &TimeMap, interval: f64) -> Self {
         if recording.events.is_empty() {
             return KeyframeIndex {
                 keyframes: Vec::new(),
@@ -57,7 +57,7 @@ impl KeyframeIndex {
             snapshot: TerminalSnapshot::capture(&vt),
         });
 
-        let mut next_keyframe_time = KEYFRAME_INTERVAL;
+        let mut next_keyframe_time = interval;
 
         for i in 0..recording.events.len() {
             let effective_time = time_map
@@ -75,7 +75,7 @@ impl KeyframeIndex {
                 // Advance next_keyframe_time past the current event to avoid
                 // double-captures. Handles large gaps spanning multiple intervals.
                 while next_keyframe_time <= effective_time {
-                    next_keyframe_time += KEYFRAME_INTERVAL;
+                    next_keyframe_time += interval;
                 }
             }
 
@@ -183,7 +183,7 @@ mod tests {
         let recording = load_test_recording("empty.cast");
         let raw_times: Vec<f64> = recording.events.iter().map(|e| e.time).collect();
         let time_map = TimeMap::build(&raw_times, None).unwrap();
-        let index = KeyframeIndex::build(&recording, &time_map);
+        let index = KeyframeIndex::build(&recording, &time_map, KEYFRAME_INTERVAL);
 
         assert_eq!(index.len(), 0);
         assert!(index.is_empty());
@@ -197,7 +197,7 @@ mod tests {
         let recording = load_test_recording("minimal_v2.cast");
         let raw_times: Vec<f64> = recording.events.iter().map(|e| e.time).collect();
         let time_map = TimeMap::build(&raw_times, None).unwrap();
-        let index = KeyframeIndex::build(&recording, &time_map);
+        let index = KeyframeIndex::build(&recording, &time_map, KEYFRAME_INTERVAL);
 
         assert_eq!(
             index.len(),
@@ -238,7 +238,7 @@ mod tests {
         let raw_times: Vec<f64> = events.iter().map(|e| e.time).collect();
         let time_map = TimeMap::build(&raw_times, None).unwrap();
         let recording = make_recording(events);
-        let index = KeyframeIndex::build(&recording, &time_map);
+        let index = KeyframeIndex::build(&recording, &time_map, KEYFRAME_INTERVAL);
 
         // KEYFRAME_INTERVAL = 5.0
         // Initial keyframe at t=0.0 (event_index=0)
@@ -275,7 +275,7 @@ mod tests {
         // Effective duration is ~4.1s — less than one KEYFRAME_INTERVAL (5.0s)
         let raw_times: Vec<f64> = recording.events.iter().map(|e| e.time).collect();
         let time_map = TimeMap::build(&raw_times, recording.header.idle_time_limit).unwrap();
-        let index = KeyframeIndex::build(&recording, &time_map);
+        let index = KeyframeIndex::build(&recording, &time_map, KEYFRAME_INTERVAL);
 
         // Only the initial keyframe should exist since effective duration < 5.0s
         assert_eq!(
@@ -308,7 +308,7 @@ mod tests {
             let recording = load_test_recording(name);
             let raw_times: Vec<f64> = recording.events.iter().map(|e| e.time).collect();
             let time_map = TimeMap::build(&raw_times, recording.header.idle_time_limit).unwrap();
-            let index = KeyframeIndex::build(&recording, &time_map);
+            let index = KeyframeIndex::build(&recording, &time_map, KEYFRAME_INTERVAL);
 
             // Non-empty recordings should have at least 1 keyframe
             if !recording.events.is_empty() {
@@ -356,7 +356,7 @@ mod tests {
         let raw_times: Vec<f64> = events.iter().map(|e| e.time).collect();
         let time_map = TimeMap::build(&raw_times, None).unwrap();
         let recording = make_recording(events);
-        let index = KeyframeIndex::build(&recording, &time_map);
+        let index = KeyframeIndex::build(&recording, &time_map, KEYFRAME_INTERVAL);
 
         // Keyframes are at: t=0.0 (idx 0), t=6.0 (idx 1), t=12.0 (idx 2), t=15.0 (idx 3)
 
@@ -380,7 +380,7 @@ mod tests {
         let raw_times: Vec<f64> = events.iter().map(|e| e.time).collect();
         let time_map = TimeMap::build(&raw_times, None).unwrap();
         let recording = make_recording(events);
-        let index = KeyframeIndex::build(&recording, &time_map);
+        let index = KeyframeIndex::build(&recording, &time_map, KEYFRAME_INTERVAL);
 
         // Time between two keyframes → returns the earlier keyframe's index
         assert_eq!(index.keyframe_at(3.0), Some(0));
@@ -399,7 +399,7 @@ mod tests {
         let raw_times: Vec<f64> = events.iter().map(|e| e.time).collect();
         let time_map = TimeMap::build(&raw_times, None).unwrap();
         let recording = make_recording(events);
-        let index = KeyframeIndex::build(&recording, &time_map);
+        let index = KeyframeIndex::build(&recording, &time_map, KEYFRAME_INTERVAL);
 
         // Time before first keyframe → returns None
         // First keyframe is at t=0.0, so negative time returns None
@@ -420,7 +420,7 @@ mod tests {
         let raw_times: Vec<f64> = events.iter().map(|e| e.time).collect();
         let time_map = TimeMap::build(&raw_times, None).unwrap();
         let recording = make_recording(events);
-        let index = KeyframeIndex::build(&recording, &time_map);
+        let index = KeyframeIndex::build(&recording, &time_map, KEYFRAME_INTERVAL);
 
         // Time at or past last keyframe → returns last keyframe's index
         assert_eq!(index.keyframe_at(15.0), Some(3));
@@ -433,7 +433,7 @@ mod tests {
         let recording = load_test_recording("empty.cast");
         let raw_times: Vec<f64> = recording.events.iter().map(|e| e.time).collect();
         let time_map = TimeMap::build(&raw_times, None).unwrap();
-        let index = KeyframeIndex::build(&recording, &time_map);
+        let index = KeyframeIndex::build(&recording, &time_map, KEYFRAME_INTERVAL);
 
         // Empty index → returns None
         assert_eq!(index.keyframe_at(0.0), None);
@@ -457,7 +457,7 @@ mod tests {
         let raw_times: Vec<f64> = events.iter().map(|e| e.time).collect();
         let time_map = TimeMap::build(&raw_times, None).unwrap();
         let recording = make_recording(events);
-        let index = KeyframeIndex::build(&recording, &time_map);
+        let index = KeyframeIndex::build(&recording, &time_map, KEYFRAME_INTERVAL);
 
         let keyframe_tuples: Vec<(f64, usize)> = (0..index.len())
             .map(|i| {

@@ -86,6 +86,7 @@ fn main() {
 
     let opts = speedrun_core::LoadOptions {
         idle_limit: args.idle_limit,
+        keyframe_interval: args.keyframe_interval,
     };
 
     let mut player = speedrun_core::Player::load_with(file, opts).unwrap_or_else(|e| {

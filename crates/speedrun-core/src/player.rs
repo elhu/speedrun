@@ -7,7 +7,7 @@
 use std::fmt;
 use std::io::Read;
 
-use crate::index::KeyframeIndex;
+use crate::index::{KEYFRAME_INTERVAL, KeyframeIndex};
 use crate::parser::{EventData, EventType, Marker, ParseError, Recording};
 use crate::snapshot::{CursorState, create_vt};
 use crate::timemap::{TimeMap, TimeMapError};
@@ -60,13 +60,24 @@ impl From<TimeMapError> for PlayerError {
 // ---------------------------------------------------------------------------
 
 /// Options for loading a recording into a [`Player`].
-#[derive(Default)]
 pub struct LoadOptions {
     /// Cap idle time between events (seconds).
     /// `Some(limit)` overrides the header's `idle_time_limit`.
     /// `None` means use the header value, or no limit if the header
     /// doesn't specify one either.
     pub idle_limit: Option<f64>,
+    /// Interval between keyframe snapshots in effective time (seconds).
+    /// Lower values increase memory usage but make seeks faster.
+    pub keyframe_interval: f64,
+}
+
+impl Default for LoadOptions {
+    fn default() -> Self {
+        Self {
+            idle_limit: None,
+            keyframe_interval: KEYFRAME_INTERVAL,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +141,7 @@ impl Player {
         let time_map = TimeMap::build(&raw_times, resolved_limit)?;
 
         // Build keyframe index
-        let index = KeyframeIndex::build(&recording, &time_map);
+        let index = KeyframeIndex::build(&recording, &time_map, opts.keyframe_interval);
 
         // Create initial virtual terminal
         let vt = create_vt(
@@ -541,6 +552,7 @@ mod tests {
             "long_idle.cast",
             LoadOptions {
                 idle_limit: Some(1.0),
+                ..LoadOptions::default()
             },
         );
         // With idle limit 1.0, effective times: [1.0, 1.1, 2.1, 2.2, 3.1]
@@ -714,6 +726,7 @@ mod tests {
             Cursor::new(input),
             LoadOptions {
                 idle_limit: Some(-1.0),
+                ..LoadOptions::default()
             },
         );
         assert!(result.is_err());
