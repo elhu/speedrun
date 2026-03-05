@@ -90,11 +90,9 @@ pub struct Player {
     current_event_index: usize,
     /// Markers with effective times (converted at load).
     markers: Vec<Marker>,
-    /// Whether playback is active (used by tick/stepping in future).
-    #[allow(dead_code)]
+    /// Whether playback is active.
     playing: bool,
-    /// Playback speed multiplier (used by tick/stepping in future).
-    #[allow(dead_code)]
+    /// Playback speed multiplier.
     speed: f64,
 }
 
@@ -273,6 +271,192 @@ impl Player {
     /// Markers with effective (not raw) timestamps.
     pub fn markers(&self) -> &[Marker] {
         &self.markers
+    }
+
+    // -----------------------------------------------------------------------
+    // Playback state control
+    // -----------------------------------------------------------------------
+
+    /// Start playback.
+    pub fn play(&mut self) {
+        self.playing = true;
+    }
+
+    /// Pause playback.
+    pub fn pause(&mut self) {
+        self.playing = false;
+    }
+
+    /// Toggle between playing and paused.
+    pub fn toggle(&mut self) {
+        self.playing = !self.playing;
+    }
+
+    /// Whether playback is currently active.
+    pub fn is_playing(&self) -> bool {
+        self.playing
+    }
+
+    /// Set the playback speed multiplier.
+    pub fn set_speed(&mut self, speed: f64) {
+        self.speed = speed;
+    }
+
+    /// Current playback speed multiplier.
+    pub fn speed(&self) -> f64 {
+        self.speed
+    }
+
+    // -----------------------------------------------------------------------
+    // Tick (continuous playback advancement)
+    // -----------------------------------------------------------------------
+
+    /// Advance playback by `dt` wall-clock seconds.
+    ///
+    /// Returns `true` if any terminal state changed (events were processed
+    /// or playback auto-paused at the end).
+    pub fn tick(&mut self, dt: f64) -> bool {
+        if !self.playing {
+            return false;
+        }
+
+        let new_time = (self.current_time + dt * self.speed).min(self.duration());
+        let mut state_changed = false;
+
+        // Feed events in the [current_time, new_time] window
+        while self.current_event_index < self.recording.events.len() {
+            let Some(t) = self.time_map.effective_time(self.current_event_index) else {
+                break;
+            };
+            if t > new_time {
+                break;
+            }
+
+            let event = &self.recording.events[self.current_event_index];
+            match (&event.event_type, &event.data) {
+                (EventType::Output, EventData::Text(data)) => {
+                    let _ = self.vt.feed_str(data);
+                    state_changed = true;
+                }
+                (EventType::Resize, EventData::Resize { cols, rows }) => {
+                    let _ = self.vt.feed_str(&format!("\x1b[8;{rows};{cols}t"));
+                    state_changed = true;
+                }
+                // Input and Marker events don't affect terminal state
+                (EventType::Input, _) | (EventType::Marker, _) => {}
+                _ => {}
+            }
+
+            self.current_event_index += 1;
+        }
+
+        self.current_time = new_time;
+
+        // Auto-pause at end
+        if new_time >= self.duration() {
+            self.playing = false;
+            state_changed = true;
+        }
+
+        state_changed
+    }
+
+    // -----------------------------------------------------------------------
+    // Time to next event (for TUI event loop sleep)
+    // -----------------------------------------------------------------------
+
+    /// Wall-clock duration until the next event, accounting for speed.
+    ///
+    /// Returns `None` when paused or at the end of the recording.
+    /// Returns `Some(Duration::ZERO)` if an event is overdue.
+    pub fn time_to_next_event(&self) -> Option<std::time::Duration> {
+        if !self.playing {
+            return None;
+        }
+
+        if self.current_event_index >= self.recording.events.len() {
+            return None;
+        }
+
+        let next_effective_time = self.time_map.effective_time(self.current_event_index)?;
+        let delta = (next_effective_time - self.current_time) / self.speed;
+
+        if delta <= 0.0 {
+            Some(std::time::Duration::ZERO)
+        } else {
+            Some(std::time::Duration::from_secs_f64(delta))
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Single-event stepping
+    // -----------------------------------------------------------------------
+
+    /// Advance to the next output event (only when paused).
+    ///
+    /// Processes intervening resize events to keep terminal dimensions
+    /// correct. Skips input and marker events.
+    /// Returns `true` if an output event was found and processed.
+    pub fn step_forward(&mut self) -> bool {
+        if self.playing {
+            return false;
+        }
+
+        let mut idx = self.current_event_index;
+        while idx < self.recording.events.len() {
+            let event = &self.recording.events[idx];
+            match (&event.event_type, &event.data) {
+                (EventType::Output, EventData::Text(data)) => {
+                    let _ = self.vt.feed_str(data);
+                    if let Some(t) = self.time_map.effective_time(idx) {
+                        self.current_time = t;
+                    }
+                    self.current_event_index = idx + 1;
+                    return true;
+                }
+                (EventType::Resize, EventData::Resize { cols, rows }) => {
+                    let _ = self.vt.feed_str(&format!("\x1b[8;{rows};{cols}t"));
+                }
+                // Input / Marker: skip
+                _ => {}
+            }
+            idx += 1;
+        }
+
+        false
+    }
+
+    /// Seek to the previous output event (only when paused).
+    ///
+    /// Internally calls `seek()` to rebuild terminal state from a keyframe,
+    /// since the virtual terminal is forward-only.
+    /// Returns `true` if a previous output event was found.
+    pub fn step_backward(&mut self) -> bool {
+        if self.playing {
+            return false;
+        }
+
+        // Guard against underflow
+        if self.current_event_index == 0 {
+            return false;
+        }
+
+        // Scan backward from current_event_index - 1
+        let mut idx = self.current_event_index - 1;
+        loop {
+            if self.recording.events[idx].event_type == EventType::Output
+                && let Some(t) = self.time_map.effective_time(idx)
+            {
+                self.seek(t);
+                return true;
+            }
+            if idx == 0 {
+                break;
+            }
+            idx -= 1;
+        }
+
+        false
     }
 }
 
