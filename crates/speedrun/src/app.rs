@@ -94,13 +94,20 @@ impl App {
         self.was_playing_before_help = self.player.is_playing();
         self.player.pause();
         self.help_visible = true;
+        // Show controls underneath the overlay (paused state, per controls rules)
+        self.controls_force_show = true;
+        self.controls_manually_hidden = false;
     }
 
     fn dismiss_help(&mut self) {
         self.help_visible = false;
         if self.was_playing_before_help {
             self.player.play();
+            // Resume auto-hide: clear force_show so the 2s interaction timer takes over.
+            // last_interaction is already fresh from the keypress that dismissed help.
+            self.controls_force_show = false;
         }
+        // If was paused, keep controls_force_show = true (already set by show_help)
     }
 
     pub fn run(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
@@ -1141,6 +1148,63 @@ mod tests {
         assert!(app.help_visible);
         app.handle_action(Action::ToggleHelp); // dismiss
         assert!(!app.help_visible);
+    }
+
+    // ── Help overlay + controls interaction tests ─────────────────────────────
+
+    #[test]
+    fn show_help_forces_controls_visible() {
+        // Start with auto-hidden controls (playing, manually hidden cleared)
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        let mut app = App::new(player, true);
+        // Simulate controls having been auto-hidden
+        app.controls_force_show = false;
+        app.controls_manually_hidden = false;
+        app.last_interaction = Instant::now() - Duration::from_secs(10);
+        assert!(!app.controls_visible()); // sanity: controls are hidden
+
+        // Opening help should force controls visible
+        app.handle_action(Action::ToggleHelp);
+        assert!(app.help_visible);
+        assert!(app.controls_visible());
+        assert!(app.controls_force_show);
+    }
+
+    #[test]
+    fn dismiss_help_resumes_autohide_when_was_playing() {
+        // Playing, then open help, then dismiss — controls_force_show should be cleared
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::ToggleHelp); // pauses, sets force_show=true
+        assert!(app.controls_force_show);
+
+        app.handle_action(Action::ToggleHelp); // dismisses, resumes play, clears force_show
+        assert!(!app.help_visible);
+        assert!(app.player.is_playing());
+        // force_show cleared so auto-hide timer governs visibility
+        assert!(!app.controls_force_show);
+        // last_interaction is fresh from keypress, so controls are still visible within 2s
+        assert!(app.controls_visible());
+    }
+
+    #[test]
+    fn dismiss_help_keeps_force_show_when_was_paused() {
+        // Paused, then open help, then dismiss — controls should stay force-shown
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+        assert!(!app.player.is_playing());
+
+        app.handle_action(Action::ToggleHelp);
+        app.handle_action(Action::ToggleHelp); // dismiss
+
+        assert!(!app.help_visible);
+        assert!(!app.player.is_playing());
+        // Paused state: force_show should still be true
+        assert!(app.controls_force_show);
+        assert!(app.controls_visible());
     }
 
     // ── Toggle cycle test ─────────────────────────────────────────────────────
