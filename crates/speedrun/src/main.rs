@@ -4,6 +4,8 @@ pub mod help;
 pub mod input;
 pub mod ui;
 
+use std::io::{IsTerminal, Read};
+
 use clap::Parser;
 use crossterm::{
     execute,
@@ -16,7 +18,7 @@ use ratatui::backend::CrosstermBackend;
 #[derive(Parser, Debug)]
 #[command(name = "speedrun", version, about)]
 struct Args {
-    /// Path to an asciicast v2 or v3 recording.
+    /// Path to an asciicast v2 or v3 recording. Use "-" to read from stdin.
     file: std::path::PathBuf,
 
     /// Playback speed multiplier.
@@ -75,24 +77,38 @@ fn main() {
 
     let args = Args::parse();
 
-    let file = std::fs::File::open(&args.file).unwrap_or_else(|e| {
-        match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                eprintln!("File not found: {}", args.file.display());
-            }
-            _ => {
-                eprintln!("Cannot read file: {}: {e}", args.file.display());
-            }
+    let reader: Box<dyn Read> = if args.file.as_os_str() == "-" {
+        // Must check is_terminal BEFORE reading
+        if std::io::stdin().is_terminal() {
+            eprintln!("No input piped — did you mean to specify a file?");
+            std::process::exit(1);
         }
-        std::process::exit(1);
-    });
+        let mut buf = Vec::new();
+        std::io::stdin().read_to_end(&mut buf).unwrap_or_else(|e| {
+            eprintln!("Cannot read from stdin: {e}");
+            std::process::exit(1);
+        });
+        Box::new(std::io::Cursor::new(buf))
+    } else {
+        Box::new(std::fs::File::open(&args.file).unwrap_or_else(|e| {
+            match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    eprintln!("File not found: {}", args.file.display());
+                }
+                _ => {
+                    eprintln!("Cannot read file: {}: {e}", args.file.display());
+                }
+            }
+            std::process::exit(1);
+        }))
+    };
 
     let opts = speedrun_core::LoadOptions {
         idle_limit: args.idle_limit,
         keyframe_interval: args.keyframe_interval,
     };
 
-    let mut player = speedrun_core::Player::load_with(file, opts).unwrap_or_else(|e| {
+    let mut player = speedrun_core::Player::load_with(reader, opts).unwrap_or_else(|e| {
         eprintln!("Invalid recording: {e}");
         std::process::exit(1);
     });
@@ -123,5 +139,17 @@ fn main() {
     if let Err(e) = result {
         eprintln!("Error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn args_accepts_dash_as_file() {
+        let args = Args::try_parse_from(["speedrun", "-"]).expect("should accept '-' as file arg");
+        assert_eq!(args.file.as_os_str(), "-");
     }
 }
