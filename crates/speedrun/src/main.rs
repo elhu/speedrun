@@ -36,7 +36,7 @@ struct Args {
 
     /// Keyframe snapshot interval in seconds.
     /// Lower values increase memory but make seeks faster.
-    #[arg(long, default_value_t = 5.0)]
+    #[arg(short = 'k', long, default_value_t = 5.0)]
     keyframe_interval: f64,
 
     /// Start with the controls bar hidden.

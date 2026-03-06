@@ -149,10 +149,10 @@ impl App {
             last_tick = now;
 
             if self.player.is_playing() {
-                let changed = self.player.tick(dt);
-                if changed {
-                    needs_redraw = true;
-                }
+                self.player.tick(dt);
+                // Always redraw while playing so time display and progress bar
+                // update smoothly (~30fps), not just when events fire.
+                needs_redraw = true;
             }
 
             // Trigger re-render if controls visibility changed (e.g., auto-hide fired)
@@ -180,12 +180,18 @@ impl App {
             .time_to_next_event()
             .unwrap_or(Duration::from_millis(100));
 
-        if self.player.is_playing() && self.controls_visible() {
+        let base = if self.player.is_playing() && self.controls_visible() {
             let elapsed = self.last_interaction.elapsed();
             let hide_deadline = Duration::from_secs(2).saturating_sub(elapsed);
             playback.min(hide_deadline.max(Duration::from_millis(10)))
         } else {
             playback
+        };
+
+        if self.player.is_playing() {
+            base.min(Duration::from_millis(33))
+        } else {
+            base
         }
     }
 
@@ -219,6 +225,15 @@ impl App {
                 self.should_quit = true;
             }
             Action::TogglePlayback => {
+                // If paused at the end of a non-empty recording, seek to beginning
+                // so Space restarts playback instead of immediately auto-pausing again.
+                // The !is_playing() guard prevents seeking when pressing Space to pause.
+                if !self.player.is_playing()
+                    && self.player.current_time() >= self.player.duration()
+                    && self.player.duration() > 0.0
+                {
+                    self.player.seek(0.0);
+                }
                 self.player.toggle();
                 if self.player.is_playing() {
                     // Resumed: let auto-hide take over
@@ -498,6 +513,71 @@ mod tests {
         assert_eq!(app.compute_timeout(), Duration::from_millis(100));
     }
 
+    #[test]
+    fn compute_timeout_capped_while_playing() {
+        // Load a file and start playing; time_to_next_event returns ~0.5s (500ms).
+        // With the 33ms cap applied while playing, timeout must be <= 33ms.
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        let app = App::new(player, true);
+        assert!(
+            app.compute_timeout() <= Duration::from_millis(33),
+            "compute_timeout while playing should be capped at 33ms, got {:?}",
+            app.compute_timeout()
+        );
+    }
+
+    #[test]
+    fn compute_timeout_uncapped_while_paused() {
+        // Load a file without playing; time_to_next_event returns None → fallback 100ms.
+        // When paused, the 33ms cap is NOT applied, so result should be > 33ms.
+        let player = load_player("minimal_v2.cast");
+        let app = App::new(player, true);
+        assert!(
+            app.compute_timeout() > Duration::from_millis(33),
+            "compute_timeout while paused should exceed 33ms, got {:?}",
+            app.compute_timeout()
+        );
+    }
+
+    #[test]
+    fn space_at_end_restarts() {
+        // Seek to end so player is auto-paused at duration, then press Space.
+        // Expect: player is_playing() and current_time() == 0.0.
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        player.tick(player.duration() + 10.0);
+        assert!(!player.is_playing()); // auto-paused at end
+        let duration = player.duration();
+        assert!(player.current_time() >= duration);
+
+        let mut app = App::new(player, false);
+        app.handle_action(Action::TogglePlayback);
+
+        assert!(
+            app.player.is_playing(),
+            "player should be playing after Space at end"
+        );
+        assert!(
+            (app.player.current_time() - 0.0).abs() < 1e-9,
+            "current_time should be 0.0 after restart, got {}",
+            app.player.current_time()
+        );
+    }
+
+    #[test]
+    fn space_on_empty_recording() {
+        // On a zero-duration recording, pressing Space should toggle without seeking or panicking.
+        let player = load_player("empty.cast");
+        assert_eq!(player.duration(), 0.0);
+        let mut app = App::new(player, false);
+
+        // Should not panic
+        app.handle_action(Action::TogglePlayback);
+        // Player should have toggled (started playing, then may auto-pause — just no panic)
+        // The main assertion is no panic; we also check no seek-to-0 infinite loop behavior.
+    }
+
     // ── next_speed unit tests ─────────────────────────────────────────────────
 
     #[test]
@@ -636,8 +716,10 @@ mod tests {
         let mut app = App::new(player, false);
         assert!(!app.player.is_playing());
 
+        // With the fix, step_backward skips the currently displayed event (index 1, t=1.2)
+        // and seeks to the previous output event (index 0, t=0.5).
         app.handle_action(Action::StepBackward);
-        assert!((app.player.current_time() - 1.2).abs() < 1e-9);
+        assert!((app.player.current_time() - 0.5).abs() < 1e-9);
         assert!(app.controls_force_show);
     }
 
