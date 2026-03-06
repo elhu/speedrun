@@ -1,0 +1,19 @@
+---
+source: crates/speedrun/src/help.rs
+expression: output
+---
+┌─────── Keybindings ────────┐
+│ Playback                   │
+│   Space         Play / pau │
+│   + / =         Speed up   │
+│   -             Speed down │
+│                            │
+│ Navigation                 │
+│   ← →           Seek ±5s   │
+│   Shift+← →     Seek ±30s  │
+│   . ,           Step forwa │
+│   ] [           Next / pre │
+│   0-9           Jump to 0% │
+│   Home / g      Jump to st │
+│   End / G       Jump to en │
+└────────────────────────────┘

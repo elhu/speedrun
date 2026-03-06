@@ -1,0 +1,9 @@
+---
+source: crates/speedrun/src/help.rs
+expression: output
+---
+┌ Keybindings ┐
+│ Playback    │
+│   Space     │
+│   + / =     │
+└─────────────┘
