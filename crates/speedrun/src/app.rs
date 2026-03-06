@@ -716,8 +716,10 @@ mod tests {
         let mut app = App::new(player, false);
         assert!(!app.player.is_playing());
 
+        // With the fix, step_backward skips the currently displayed event (index 1, t=1.2)
+        // and seeks to the previous output event (index 0, t=0.5).
         app.handle_action(Action::StepBackward);
-        assert!((app.player.current_time() - 1.2).abs() < 1e-9);
+        assert!((app.player.current_time() - 0.5).abs() < 1e-9);
         assert!(app.controls_force_show);
     }
 

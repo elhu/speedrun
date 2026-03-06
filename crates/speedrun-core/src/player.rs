@@ -447,26 +447,24 @@ impl Player {
             return false;
         }
 
-        // Guard against underflow
-        if self.current_event_index == 0 {
-            return false;
-        }
-
-        // Scan backward from current_event_index - 1
-        let mut idx = self.current_event_index - 1;
-        loop {
-            if self.recording.events[idx].event_type == EventType::Output
-                && let Some(t) = self.time_map.effective_time(idx)
-            {
-                self.seek(t);
-                return true;
-            }
-            if idx == 0 {
-                break;
-            }
+        // Scan backward. The first Output event we find is the one currently
+        // on screen — skip it. The second Output event is our target.
+        let mut skipped_current = false;
+        let mut idx = self.current_event_index;
+        while idx > 0 {
             idx -= 1;
+            if self.recording.events[idx].event_type == EventType::Output {
+                if !skipped_current {
+                    // This is the event currently displayed — skip it
+                    skipped_current = true;
+                    continue;
+                }
+                if let Some(t) = self.time_map.effective_time(idx) {
+                    self.seek(t);
+                    return true;
+                }
+            }
         }
-
         false
     }
 }
@@ -1106,11 +1104,30 @@ mod tests {
         player.seek(1.5);
         assert_f64_eq(player.current_time(), 1.5);
 
-        // step_backward should find the last output event before current_event_index,
-        // which is event index 1 at t=1.2.
+        let screen_before = player
+            .screen()
+            .iter()
+            .map(|line| line.text().trim_end().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // step_backward should skip the currently displayed output event (index 1, t=1.2)
+        // and seek to the previous output event (index 0, t=0.5).
         let stepped = player.step_backward();
         assert!(stepped, "step_backward should return true");
-        assert_f64_eq(player.current_time(), 1.2);
+        assert_f64_eq(player.current_time(), 0.5);
+
+        let screen_after = player
+            .screen()
+            .iter()
+            .map(|line| line.text().trim_end().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_ne!(
+            screen_before, screen_after,
+            "step_backward should change screen content"
+        );
     }
 
     #[test]
@@ -1140,6 +1157,104 @@ mod tests {
 
         let stepped = player.step_backward();
         assert!(!stepped, "step_backward while playing should return false");
+    }
+
+    fn screen_text(player: &Player) -> String {
+        player
+            .screen()
+            .iter()
+            .map(|line| line.text().trim_end().to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn step_forward_then_backward_round_trips() {
+        let mut player = load_file("minimal_v2.cast");
+
+        // Advance to event 0
+        let stepped = player.step_forward();
+        assert!(stepped, "first step_forward should succeed");
+        let screen_after_first_step = screen_text(&player);
+
+        // Advance to event 1
+        let stepped = player.step_forward();
+        assert!(stepped, "second step_forward should succeed");
+
+        // Step backward should go back to event 0 screen content
+        let stepped = player.step_backward();
+        assert!(stepped, "step_backward should succeed");
+        let screen_after_backward = screen_text(&player);
+
+        assert_eq!(
+            screen_after_first_step, screen_after_backward,
+            "step forward then backward should round-trip to the same screen content"
+        );
+    }
+
+    #[test]
+    fn step_backward_repeatedly_walks_back() {
+        let mut player = load_file("minimal_v2.cast");
+
+        // Seek to the end
+        player.seek(player.duration());
+
+        let mut times = Vec::new();
+        for _ in 0..3 {
+            let stepped = player.step_backward();
+            assert!(stepped, "step_backward should succeed");
+            times.push(player.current_time());
+        }
+
+        // Each time should be strictly less than the previous
+        assert!(
+            times[0] > times[1],
+            "first step_backward time {} should be greater than second {}",
+            times[0],
+            times[1]
+        );
+        assert!(
+            times[1] > times[2],
+            "second step_backward time {} should be greater than third {}",
+            times[1],
+            times[2]
+        );
+    }
+
+    #[test]
+    fn step_backward_after_tick_changes_screen() {
+        let mut player = load_file("minimal_v2.cast");
+
+        player.play();
+        player.tick(2.0);
+        player.pause();
+
+        let screen_before = screen_text(&player);
+
+        let stepped = player.step_backward();
+        assert!(stepped, "step_backward should succeed after tick");
+
+        let screen_after = screen_text(&player);
+        assert_ne!(
+            screen_before, screen_after,
+            "step_backward after tick should change screen content"
+        );
+    }
+
+    #[test]
+    fn step_backward_with_one_event_processed_returns_false() {
+        let mut player = load_file("minimal_v2.cast");
+
+        // Advance to event 0 only
+        let stepped = player.step_forward();
+        assert!(stepped, "step_forward should succeed");
+
+        // Only one output event has been processed; no earlier one to step to
+        let stepped = player.step_backward();
+        assert!(
+            !stepped,
+            "step_backward with one event processed should return false"
+        );
     }
 
     // -----------------------------------------------------------------------
