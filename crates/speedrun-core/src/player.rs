@@ -1054,6 +1054,27 @@ mod tests {
     }
 
     #[test]
+    fn time_to_next_event_idle_sleep_hint() {
+        // Confirm that when playing with events remaining, time_to_next_event()
+        // returns Some(non-zero duration). This verifies the event loop can sleep
+        // rather than busy-loop, keeping CPU usage near zero during idle playback.
+        let mut player = load_file("minimal_v2.cast");
+        player.play();
+
+        // At t=0.0 playing, first event is at t=0.5 — there is a non-trivial gap.
+        let hint = player.time_to_next_event();
+        assert!(
+            hint.is_some(),
+            "expected Some sleep hint when playing with events remaining"
+        );
+        let dur = hint.unwrap();
+        assert!(
+            dur > std::time::Duration::ZERO,
+            "expected non-zero sleep duration, got {dur:?} — a zero duration would cause busy-looping"
+        );
+    }
+
+    #[test]
     fn time_to_next_event_at_end() {
         let mut player = load_file("minimal_v2.cast");
         player.play();
