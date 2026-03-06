@@ -1,4 +1,5 @@
 mod app;
+pub mod input;
 pub mod ui;
 
 use clap::Parser;

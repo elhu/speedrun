@@ -1,5 +1,6 @@
+use crate::input::{Action, map_key_event};
 use crate::ui::{TerminalView, ViewportState};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -94,25 +95,68 @@ impl App {
 
         self.last_interaction = Instant::now();
 
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
+        if let Some(action) = map_key_event(key) {
+            self.handle_action(action);
+        }
+    }
+
+    fn handle_action(&mut self, action: Action) {
+        match action {
+            Action::Quit => {
                 self.should_quit = true;
             }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.should_quit = true;
-            }
-            KeyCode::Char(' ') => {
+            Action::TogglePlayback => {
                 self.player.toggle();
             }
-            KeyCode::Right => {
+            Action::SeekForward => {
                 self.player.seek_relative(5.0);
                 self.show_controls = true;
             }
-            KeyCode::Left => {
+            Action::SeekBackward => {
                 self.player.seek_relative(-5.0);
                 self.show_controls = true;
             }
-            _ => {}
+            Action::SeekForward30s => {
+                // TODO: implemented in Phase 3 epic
+                self.show_controls = true;
+            }
+            Action::SeekBackward30s => {
+                // TODO: implemented in Phase 3 epic
+                self.show_controls = true;
+            }
+            Action::StepForward => {
+                // TODO: implemented in Phase 3 epic
+            }
+            Action::StepBackward => {
+                // TODO: implemented in Phase 3 epic
+            }
+            Action::SpeedUp => {
+                // TODO: implemented in Phase 3 epic
+            }
+            Action::SpeedDown => {
+                // TODO: implemented in Phase 3 epic
+            }
+            Action::NextMarker => {
+                // TODO: implemented in Phase 3 epic
+            }
+            Action::PrevMarker => {
+                // TODO: implemented in Phase 3 epic
+            }
+            Action::JumpToPercent(_) => {
+                // TODO: implemented in Phase 3 epic
+            }
+            Action::JumpToStart => {
+                // TODO: implemented in Phase 3 epic
+            }
+            Action::JumpToEnd => {
+                // TODO: implemented in Phase 3 epic
+            }
+            Action::ToggleControls => {
+                // TODO: implemented in Phase 3 epic
+            }
+            Action::ToggleHelp => {
+                // TODO: implemented in Phase 3 epic
+            }
         }
     }
 
