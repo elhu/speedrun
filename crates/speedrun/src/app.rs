@@ -9,6 +9,34 @@ use std::time::{Duration, Instant};
 
 type Tui = Terminal<CrosstermBackend<std::io::Stdout>>;
 
+const SPEED_STEPS: &[f64] = &[0.25, 0.5, 1.0, 1.5, 2.0, 4.0];
+
+/// Find the next speed step in the given direction.
+///
+/// `direction = 1` (up): returns the smallest step strictly greater than `current`.
+/// `direction = -1` (down): returns the largest step strictly less than `current`.
+/// If no such step exists, clamps to the boundary (max or min).
+fn next_speed(current: f64, direction: i8) -> f64 {
+    const EPSILON: f64 = 1e-9;
+
+    if direction > 0 {
+        // Find smallest step strictly greater than current
+        SPEED_STEPS
+            .iter()
+            .copied()
+            .find(|&s| s > current + EPSILON)
+            .unwrap_or(*SPEED_STEPS.last().unwrap())
+    } else {
+        // Find largest step strictly less than current
+        SPEED_STEPS
+            .iter()
+            .rev()
+            .copied()
+            .find(|&s| s < current - EPSILON)
+            .unwrap_or(*SPEED_STEPS.first().unwrap())
+    }
+}
+
 pub struct App {
     pub player: Player,
     pub show_controls: bool,
@@ -131,10 +159,16 @@ impl App {
                 // TODO: implemented in Phase 3 epic
             }
             Action::SpeedUp => {
-                // TODO: implemented in Phase 3 epic
+                let new_speed = next_speed(self.player.speed(), 1);
+                self.player.set_speed(new_speed);
+                self.show_controls = true;
+                self.last_interaction = Instant::now();
             }
             Action::SpeedDown => {
-                // TODO: implemented in Phase 3 epic
+                let new_speed = next_speed(self.player.speed(), -1);
+                self.player.set_speed(new_speed);
+                self.show_controls = true;
+                self.last_interaction = Instant::now();
             }
             Action::NextMarker => {
                 // TODO: implemented in Phase 3 epic
@@ -266,5 +300,98 @@ mod tests {
         let app = App::new(player, true);
         // time_to_next_event() returns None when paused → fallback 100ms
         assert_eq!(app.compute_timeout(), Duration::from_millis(100));
+    }
+
+    // ── next_speed unit tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn next_speed_up_from_1x() {
+        assert!((next_speed(1.0, 1) - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn next_speed_down_from_1x() {
+        assert!((next_speed(1.0, -1) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn next_speed_up_clamps_at_max() {
+        assert!((next_speed(4.0, 1) - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn next_speed_down_clamps_at_min() {
+        assert!((next_speed(0.25, -1) - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn next_speed_up_snaps_from_non_step() {
+        // 0.75 is between 0.5 and 1.0, snapping up → 1.0
+        assert!((next_speed(0.75, 1) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn next_speed_down_snaps_from_non_step() {
+        // 0.75 is between 0.5 and 1.0, snapping down → 0.5
+        assert!((next_speed(0.75, -1) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn next_speed_up_from_min() {
+        assert!((next_speed(0.25, 1) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn next_speed_down_from_max() {
+        assert!((next_speed(4.0, -1) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn next_speed_full_cycle_up() {
+        let expected = [0.25, 0.5, 1.0, 1.5, 2.0, 4.0, 4.0];
+        let mut current = 0.25;
+        for &exp in &expected[1..] {
+            current = next_speed(current, 1);
+            assert!(
+                (current - exp).abs() < 1e-9,
+                "expected {exp}, got {current}"
+            );
+        }
+    }
+
+    #[test]
+    fn next_speed_full_cycle_down() {
+        let expected = [4.0, 2.0, 1.5, 1.0, 0.5, 0.25, 0.25];
+        let mut current = 4.0;
+        for &exp in &expected[1..] {
+            current = next_speed(current, -1);
+            assert!(
+                (current - exp).abs() < 1e-9,
+                "expected {exp}, got {current}"
+            );
+        }
+    }
+
+    #[test]
+    fn speed_up_action_changes_player_speed() {
+        let mut player = load_player("minimal_v2.cast");
+        // Ensure starting speed is 1.0
+        player.set_speed(1.0);
+        let mut app = App::new(player, false);
+
+        app.handle_action(Action::SpeedUp);
+        assert!((app.player.speed() - 1.5).abs() < 1e-9);
+        assert!(app.show_controls);
+    }
+
+    #[test]
+    fn speed_down_action_changes_player_speed() {
+        let mut player = load_player("minimal_v2.cast");
+        player.set_speed(1.0);
+        let mut app = App::new(player, false);
+
+        app.handle_action(Action::SpeedDown);
+        assert!((app.player.speed() - 0.5).abs() < 1e-9);
+        assert!(app.show_controls);
     }
 }
