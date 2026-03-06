@@ -97,6 +97,10 @@ fn main() {
         std::process::exit(1);
     });
 
+    for warning in player.warnings() {
+        eprintln!("warning: line {}: {}", warning.line_number, warning.message);
+    }
+
     player.set_speed(args.speed);
 
     if let Some(t) = args.start_at {

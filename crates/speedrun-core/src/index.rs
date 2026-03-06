@@ -164,6 +164,7 @@ mod tests {
             header: make_header(),
             events,
             markers: vec![],
+            warnings: vec![],
         }
     }
 

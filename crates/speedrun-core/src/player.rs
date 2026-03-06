@@ -8,7 +8,7 @@ use std::fmt;
 use std::io::Read;
 
 use crate::index::{KEYFRAME_INTERVAL, KeyframeIndex};
-use crate::parser::{EventData, EventType, Marker, ParseError, Recording};
+use crate::parser::{EventData, EventType, Marker, ParseError, ParseWarning, Recording};
 use crate::snapshot::{CursorState, create_vt};
 use crate::timemap::{TimeMap, TimeMapError};
 
@@ -105,6 +105,8 @@ pub struct Player {
     playing: bool,
     /// Playback speed multiplier.
     speed: f64,
+    /// Warnings produced during parsing.
+    warnings: Vec<ParseWarning>,
 }
 
 impl fmt::Debug for Player {
@@ -129,7 +131,7 @@ impl Player {
     ///
     /// Idle limit resolution order: `opts.idle_limit` > header `idle_time_limit` > no limit.
     pub fn load_with(reader: impl Read, opts: LoadOptions) -> Result<Self, PlayerError> {
-        let recording = crate::parse(reader)?;
+        let mut recording = crate::parse(reader)?;
 
         // Resolve idle limit: CLI override > header > None (no limit)
         let resolved_limit = opts.idle_limit.or(recording.header.idle_time_limit);
@@ -169,6 +171,8 @@ impl Player {
             })
             .collect();
 
+        let warnings = std::mem::take(&mut recording.warnings);
+
         Ok(Player {
             recording,
             time_map,
@@ -179,6 +183,7 @@ impl Player {
             markers,
             playing: false,
             speed: 1.0,
+            warnings,
         })
     }
 
@@ -282,6 +287,11 @@ impl Player {
     /// Markers with effective (not raw) timestamps.
     pub fn markers(&self) -> &[Marker] {
         &self.markers
+    }
+
+    /// Warnings produced during parsing.
+    pub fn warnings(&self) -> &[ParseWarning] {
+        &self.warnings
     }
 
     // -----------------------------------------------------------------------
@@ -785,6 +795,27 @@ mod tests {
         assert!(
             matches!(err, PlayerError::Parse(_)),
             "expected Parse error for binary garbage, got {err}"
+        );
+    }
+
+    #[test]
+    fn player_warnings_accessor() {
+        // Parse a file with malformed events → warnings should be surfaced via player.warnings()
+        let input = r#"{"version": 2, "width": 80, "height": 24}
+[1.0, "o", "valid"]
+[2.0, "o"]
+[3.0, "o", "also valid"]
+"#;
+        let player = Player::load(Cursor::new(input)).unwrap();
+        assert_eq!(
+            player.warnings().len(),
+            1,
+            "expected 1 warning, got {}",
+            player.warnings().len()
+        );
+        assert!(
+            player.warnings()[0].message.contains("3 elements"),
+            "expected warning about 3 elements"
         );
     }
 

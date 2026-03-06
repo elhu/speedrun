@@ -9,6 +9,7 @@ pub struct Recording {
     pub header: Header,
     pub events: Vec<Event>,
     pub markers: Vec<Marker>, // Extracted from events for convenience
+    pub warnings: Vec<ParseWarning>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -51,6 +52,13 @@ pub struct Marker {
     pub label: String,
 }
 
+/// A non-fatal warning produced during lenient parsing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ParseWarning {
+    pub line_number: usize,
+    pub message: String,
+}
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
@@ -83,6 +91,7 @@ pub enum ParseError {
     Io {
         source: std::io::Error,
     },
+    BinaryFile,
 }
 
 impl std::fmt::Display for ParseError {
@@ -90,7 +99,10 @@ impl std::fmt::Display for ParseError {
         match self {
             ParseError::EmptyFile => write!(f, "empty file: no header line found"),
             ParseError::InvalidHeader { line, source } => {
-                write!(f, "invalid header JSON: {source} (line: {line})")
+                write!(
+                    f,
+                    "invalid header JSON: {source} (line: {line}). Expected asciicast v2 or v3 format — see https://docs.asciinema.org/manual/asciicast/v2/"
+                )
             }
             ParseError::UnsupportedVersion { version } => {
                 write!(f, "unsupported asciicast version: {version}")
@@ -116,6 +128,9 @@ impl std::fmt::Display for ParseError {
             }
             ParseError::Io { source } => {
                 write!(f, "I/O error: {source}")
+            }
+            ParseError::BinaryFile => {
+                write!(f, "file appears to be binary, not an asciicast recording")
             }
         }
     }
@@ -171,7 +186,24 @@ struct RawTerm {
 pub fn parse(reader: impl std::io::Read) -> Result<Recording, ParseError> {
     use std::io::{BufRead, BufReader, ErrorKind};
 
-    let reader = BufReader::new(reader);
+    let mut reader = BufReader::new(reader);
+
+    // -----------------------------------------------------------------------
+    // 0. Binary sniff check: peek at first 512 bytes for null bytes
+    // -----------------------------------------------------------------------
+    {
+        let buf = reader.fill_buf().map_err(|e| {
+            if e.kind() == ErrorKind::InvalidData {
+                ParseError::NotUtf8 { source: e }
+            } else {
+                ParseError::Io { source: e }
+            }
+        })?;
+        if buf.contains(&0u8) {
+            return Err(ParseError::BinaryFile);
+        }
+    }
+
     let mut lines = reader.lines();
 
     // -----------------------------------------------------------------------
@@ -231,12 +263,18 @@ pub fn parse(reader: impl std::io::Read) -> Result<Recording, ParseError> {
     };
 
     // -----------------------------------------------------------------------
-    // 2. Event parsing
+    // 2. Event parsing (lenient — malformed lines become warnings)
     // -----------------------------------------------------------------------
     let mut events = Vec::new();
     let mut markers = Vec::new();
+    let mut warnings = Vec::new();
     let mut line_number: usize = 1; // header is line 1
+    // prev_time is updated only when a V2 event is successfully parsed.
     let mut prev_time: f64 = 0.0;
+    // absolute_time tracks the running sum for V3 relative timestamps.
+    // It is NOT updated when a line is skipped (we cannot parse the delta
+    // from a malformed line); the next valid line's delta is added to the
+    // last valid event's absolute time.
     let mut absolute_time: f64 = 0.0;
 
     for line_result in lines {
@@ -245,9 +283,21 @@ pub fn parse(reader: impl std::io::Read) -> Result<Recording, ParseError> {
         let line = match line_result {
             Ok(l) => l,
             Err(e) if e.kind() == ErrorKind::InvalidData => {
-                return Err(ParseError::NotUtf8 { source: e });
+                // Mid-stream UTF-8 / IO error: stop reading, record a warning
+                warnings.push(ParseWarning {
+                    line_number,
+                    message: format!("I/O error reading line: {e}"),
+                });
+                break;
             }
-            Err(e) => return Err(ParseError::Io { source: e }),
+            Err(e) => {
+                // Other mid-stream IO error: stop reading, record a warning
+                warnings.push(ParseWarning {
+                    line_number,
+                    message: format!("I/O error reading line: {e}"),
+                });
+                break;
+            }
         };
 
         // Skip empty/whitespace-only lines
@@ -255,66 +305,90 @@ pub fn parse(reader: impl std::io::Read) -> Result<Recording, ParseError> {
             continue;
         }
 
-        let val: serde_json::Value =
-            serde_json::from_str(&line).map_err(|_| ParseError::InvalidEvent {
-                line_number,
-                content: line.clone(),
-                reason: "invalid JSON".to_string(),
-            })?;
+        // --- Try to parse this event line; any failure → warning + continue ---
 
-        let arr = val.as_array().ok_or_else(|| ParseError::InvalidEvent {
-            line_number,
-            content: line.clone(),
-            reason: "expected array of 3 elements".to_string(),
-        })?;
+        let val: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => {
+                warnings.push(ParseWarning {
+                    line_number,
+                    message: format!("invalid JSON: {line}"),
+                });
+                continue;
+            }
+        };
+
+        let arr = match val.as_array() {
+            Some(a) => a,
+            None => {
+                warnings.push(ParseWarning {
+                    line_number,
+                    message: format!("expected array of 3 elements: {line}"),
+                });
+                continue;
+            }
+        };
 
         if arr.len() != 3 {
-            return Err(ParseError::InvalidEvent {
+            warnings.push(ParseWarning {
                 line_number,
-                content: line.clone(),
-                reason: "expected array of 3 elements".to_string(),
+                message: format!("expected array of 3 elements, got {}: {line}", arr.len()),
             });
+            continue;
         }
 
         // Timestamp
-        let raw_time = arr[0].as_f64().ok_or_else(|| ParseError::InvalidEvent {
-            line_number,
-            content: line.clone(),
-            reason: "invalid timestamp".to_string(),
-        })?;
+        let raw_time = match arr[0].as_f64() {
+            Some(t) => t,
+            None => {
+                warnings.push(ParseWarning {
+                    line_number,
+                    message: format!("invalid timestamp: {line}"),
+                });
+                continue;
+            }
+        };
 
-        if raw_time < 0.0 {
-            return Err(ParseError::InvalidEvent {
-                line_number,
-                content: line.clone(),
-                reason: "negative timestamp".to_string(),
-            });
-        }
-
-        // Compute absolute time
+        // Version-specific time handling
         let time = if version == 3 {
-            // V3: timestamps are relative intervals
+            if raw_time < 0.0 {
+                warnings.push(ParseWarning {
+                    line_number,
+                    message: format!("negative interval {raw_time}: {line}"),
+                });
+                continue;
+            }
+            // V3: timestamps are relative intervals; accumulate into absolute time.
+            // absolute_time is not updated for skipped lines.
             absolute_time += raw_time;
             absolute_time
         } else {
-            // V2: timestamps are absolute; check monotonicity
+            // V2: timestamps are absolute; check monotonicity against the last
+            // *valid* event's timestamp.
             if raw_time < prev_time {
-                return Err(ParseError::InvalidEvent {
+                warnings.push(ParseWarning {
                     line_number,
-                    content: line.clone(),
-                    reason: "timestamps must be non-decreasing".to_string(),
+                    message: format!(
+                        "timestamps must be non-decreasing (got {raw_time} after {prev_time}): {line}"
+                    ),
                 });
+                continue;
             }
             prev_time = raw_time;
             raw_time
         };
 
         // Event type
-        let type_str = arr[1].as_str().ok_or_else(|| ParseError::InvalidEvent {
-            line_number,
-            content: line.clone(),
-            reason: "invalid event type".to_string(),
-        })?;
+        let type_str = match arr[1].as_str() {
+            Some(s) => s,
+            None => {
+                warnings.push(ParseWarning {
+                    line_number,
+                    message: format!("invalid event type: {line}"),
+                });
+                continue;
+            }
+        };
 
         let event_type = match type_str {
             "o" => EventType::Output,
@@ -328,30 +402,52 @@ pub fn parse(reader: impl std::io::Read) -> Result<Recording, ParseError> {
         };
 
         // Data
-        let data_str = arr[2].as_str().ok_or_else(|| ParseError::InvalidEvent {
-            line_number,
-            content: line.clone(),
-            reason: "invalid event data".to_string(),
-        })?;
+        let data_str = match arr[2].as_str() {
+            Some(s) => s,
+            None => {
+                warnings.push(ParseWarning {
+                    line_number,
+                    message: format!("invalid event data: {line}"),
+                });
+                continue;
+            }
+        };
 
         // Build EventData based on type
         let data = match event_type {
             EventType::Resize => {
                 let parts: Vec<&str> = data_str.split('x').collect();
                 if parts.len() != 2 {
-                    return Err(ParseError::InvalidResize {
+                    warnings.push(ParseWarning {
                         line_number,
-                        data: data_str.to_string(),
+                        message: format!("invalid resize format (expected COLSxROWS): {data_str}"),
                     });
+                    continue;
                 }
-                let cols: u16 = parts[0].parse().map_err(|_| ParseError::InvalidResize {
-                    line_number,
-                    data: data_str.to_string(),
-                })?;
-                let rows: u16 = parts[1].parse().map_err(|_| ParseError::InvalidResize {
-                    line_number,
-                    data: data_str.to_string(),
-                })?;
+                let cols: u16 = match parts[0].parse() {
+                    Ok(v) => v,
+                    Err(_) => {
+                        warnings.push(ParseWarning {
+                            line_number,
+                            message: format!(
+                                "invalid resize format (non-numeric cols): {data_str}"
+                            ),
+                        });
+                        continue;
+                    }
+                };
+                let rows: u16 = match parts[1].parse() {
+                    Ok(v) => v,
+                    Err(_) => {
+                        warnings.push(ParseWarning {
+                            line_number,
+                            message: format!(
+                                "invalid resize format (non-numeric rows): {data_str}"
+                            ),
+                        });
+                        continue;
+                    }
+                };
                 EventData::Resize { cols, rows }
             }
             EventType::Marker => {
@@ -375,6 +471,7 @@ pub fn parse(reader: impl std::io::Read) -> Result<Recording, ParseError> {
         header,
         events,
         markers,
+        warnings,
     })
 }
 
@@ -575,26 +672,26 @@ mod tests {
 
     #[test]
     fn test_invalid_bad_event() {
+        // bad_event.cast has valid header + malformed event [0.5, "o"] (only 2 elements)
+        // Under lenient parsing: Ok with 1 warning, valid events after the bad one are kept
         let file = std::fs::File::open(testdata_path("invalid/bad_event.cast")).unwrap();
-        let err = parse(file).unwrap_err();
-        match &err {
-            ParseError::InvalidEvent {
-                line_number,
-                reason,
-                ..
-            } => {
-                assert_eq!(
-                    *line_number, 2,
-                    "expected error on line 2, got {line_number}"
-                );
-                // Line 2 is [0.5, "o"] — only 2 elements
-                assert!(
-                    reason.contains("3 elements"),
-                    "expected reason about 3 elements, got: {reason}"
-                );
-            }
-            _ => panic!("expected InvalidEvent, got {err:?}"),
-        }
+        let recording = parse(file).unwrap();
+        assert!(
+            recording.warnings.len() >= 1,
+            "expected at least 1 warning, got {}",
+            recording.warnings.len()
+        );
+        let first_warning = &recording.warnings[0];
+        assert_eq!(
+            first_warning.line_number, 2,
+            "expected warning on line 2, got {}",
+            first_warning.line_number
+        );
+        assert!(
+            first_warning.message.contains("3 elements"),
+            "expected warning about 3 elements, got: {}",
+            first_warning.message
+        );
     }
 
     #[test]
@@ -604,19 +701,25 @@ mod tests {
         assert!(
             matches!(
                 err,
-                ParseError::NotUtf8 { .. } | ParseError::InvalidHeader { .. }
+                ParseError::NotUtf8 { .. }
+                    | ParseError::InvalidHeader { .. }
+                    | ParseError::BinaryFile
             ),
-            "expected NotUtf8 or InvalidHeader, got {err:?}"
+            "expected NotUtf8, InvalidHeader, or BinaryFile, got {err:?}"
         );
     }
 
     #[test]
     fn test_invalid_truncated() {
+        // truncated.cast has a valid header and one valid event, then a truncated line.
+        // Under lenient parsing: Ok with at least 1 event and possibly a warning
         let file = std::fs::File::open(testdata_path("invalid/truncated.cast")).unwrap();
-        let err = parse(file).unwrap_err();
+        let recording = parse(file).unwrap();
+        // Should have at least the first valid event
         assert!(
-            matches!(err, ParseError::InvalidEvent { .. }),
-            "expected InvalidEvent, got {err:?}"
+            recording.events.len() >= 1,
+            "expected at least 1 event, got {}",
+            recording.events.len()
         );
     }
 
@@ -631,16 +734,23 @@ mod tests {
 [3.0, "o", "b"]
 [2.0, "o", "c"]
 "#;
-        let err = parse(Cursor::new(input)).unwrap_err();
-        match &err {
-            ParseError::InvalidEvent { reason, .. } => {
-                assert!(
-                    reason.contains("non-decreasing"),
-                    "expected reason containing 'non-decreasing', got: {reason}"
-                );
-            }
-            _ => panic!("expected InvalidEvent, got {err:?}"),
-        }
+        // Under lenient parsing: Ok with 1 warning (line 4 skipped), 2 events
+        let recording = parse(Cursor::new(input)).unwrap();
+        assert_eq!(
+            recording.events.len(),
+            2,
+            "expected 2 events (t=1.0 and t=3.0 kept, t=2.0 skipped)"
+        );
+        assert_eq!(
+            recording.warnings.len(),
+            1,
+            "expected 1 warning for non-monotonic timestamp"
+        );
+        assert!(
+            recording.warnings[0].message.contains("non-decreasing"),
+            "expected warning about non-decreasing, got: {}",
+            recording.warnings[0].message
+        );
     }
 
     #[test]
@@ -650,16 +760,23 @@ mod tests {
 [-0.1, "o", "b"]
 [0.3, "o", "c"]
 "#;
-        let err = parse(Cursor::new(input)).unwrap_err();
-        match &err {
-            ParseError::InvalidEvent { reason, .. } => {
-                assert!(
-                    reason.contains("negative"),
-                    "expected reason containing 'negative', got: {reason}"
-                );
-            }
-            _ => panic!("expected InvalidEvent, got {err:?}"),
-        }
+        // Under lenient parsing: Ok with 1 warning (line 3 skipped), 2 events
+        let recording = parse(Cursor::new(input)).unwrap();
+        assert_eq!(
+            recording.events.len(),
+            2,
+            "expected 2 events (line 3 skipped)"
+        );
+        assert_eq!(
+            recording.warnings.len(),
+            1,
+            "expected 1 warning for negative interval"
+        );
+        assert!(
+            recording.warnings[0].message.contains("negative"),
+            "expected warning about negative, got: {}",
+            recording.warnings[0].message
+        );
     }
 
     #[test]
@@ -681,10 +798,13 @@ mod tests {
         let input = r#"{"version": 2, "width": 80, "height": 24}
 [1.0, "r", "120"]
 "#;
-        let err = parse(Cursor::new(input)).unwrap_err();
-        assert!(
-            matches!(err, ParseError::InvalidResize { .. }),
-            "expected InvalidResize, got {err:?}"
+        // Under lenient parsing: Ok with 1 warning, 0 events
+        let recording = parse(Cursor::new(input)).unwrap();
+        assert_eq!(recording.events.len(), 0, "expected 0 events");
+        assert_eq!(
+            recording.warnings.len(),
+            1,
+            "expected 1 warning for bad resize"
         );
     }
 
@@ -693,11 +813,155 @@ mod tests {
         let input = r#"{"version": 2, "width": 80, "height": 24}
 [1.0, "r", "abcxdef"]
 "#;
+        // Under lenient parsing: Ok with 1 warning, 0 events
+        let recording = parse(Cursor::new(input)).unwrap();
+        assert_eq!(recording.events.len(), 0, "expected 0 events");
+        assert_eq!(
+            recording.warnings.len(),
+            1,
+            "expected 1 warning for bad resize"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // New lenient parsing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_lenient_parse_mixed_valid_invalid() {
+        // 10 valid events + 1 malformed at position 5
+        let mut input = String::from("{\"version\": 2, \"width\": 80, \"height\": 24}\n");
+        for i in 1..=4 {
+            input.push_str(&format!("[{}.0, \"o\", \"event{}\"]\n", i, i));
+        }
+        // malformed: only 2 elements (position 5 = line 6)
+        input.push_str("[5.0, \"o\"]\n");
+        for i in 6..=10 {
+            // skip i=5 since we used 5.0 for the bad line
+            input.push_str(&format!("[{}.0, \"o\", \"event{}\"]\n", i, i));
+        }
+        let recording = parse(Cursor::new(input)).unwrap();
+        assert_eq!(recording.events.len(), 9, "expected 9 valid events");
+        assert_eq!(recording.warnings.len(), 1, "expected 1 warning");
+        assert_eq!(
+            recording.warnings[0].line_number, 6,
+            "expected warning on line 6"
+        );
+        assert!(
+            recording.warnings[0].message.contains("3 elements"),
+            "expected warning about 3 elements"
+        );
+    }
+
+    #[test]
+    fn test_all_bad_events() {
+        // Valid header + 5 malformed event lines
+        let input = r#"{"version": 2, "width": 80, "height": 24}
+[1.0, "o"]
+[2.0, "o"]
+[3.0, "o"]
+[4.0, "o"]
+[5.0, "o"]
+"#;
+        let recording = parse(Cursor::new(input)).unwrap();
+        assert_eq!(recording.events.len(), 0, "expected 0 events");
+        assert_eq!(recording.warnings.len(), 5, "expected 5 warnings");
+    }
+
+    #[test]
+    fn test_v3_skipped_line_timestamps() {
+        // 3 V3 events where event 2 is malformed
+        // Event 1: delta 0.5 → abs 0.5
+        // Event 2: malformed → skipped, absolute_time stays at 0.5
+        // Event 3: delta 0.3 → abs 0.5 + 0.3 = 0.8
+        let input = r#"{"version": 3, "term": {"cols": 80, "rows": 24}}
+[0.5, "o", "a"]
+[0.2, "o"]
+[0.3, "o", "c"]
+"#;
+        let recording = parse(Cursor::new(input)).unwrap();
+        assert_eq!(recording.events.len(), 2, "expected 2 events");
+        assert_eq!(recording.warnings.len(), 1, "expected 1 warning");
+        // First event absolute time: 0.5
+        assert!(
+            (recording.events[0].time - 0.5).abs() < 1e-9,
+            "expected first event at t=0.5, got {}",
+            recording.events[0].time
+        );
+        // Third event absolute time: 0.5 + 0.3 = 0.8 (skipped line's delta lost)
+        assert!(
+            (recording.events[1].time - 0.8).abs() < 1e-9,
+            "expected second event at t=0.8, got {}",
+            recording.events[1].time
+        );
+    }
+
+    #[test]
+    fn test_binary_sniff() {
+        // Input with null bytes should produce BinaryFile error
+        let input: Vec<u8> = vec![0x00, 0x01, 0x02, 0x03, b'h', b'e', b'l', b'l', b'o'];
         let err = parse(Cursor::new(input)).unwrap_err();
         assert!(
-            matches!(err, ParseError::InvalidResize { .. }),
-            "expected InvalidResize, got {err:?}"
+            matches!(err, ParseError::BinaryFile),
+            "expected BinaryFile, got {err:?}"
         );
+    }
+
+    #[test]
+    fn test_happy_path_regression_minimal_v2() {
+        let file = std::fs::File::open(testdata_path("minimal_v2.cast")).unwrap();
+        let recording = parse(file).unwrap();
+        assert_eq!(recording.events.len(), 4, "expected 4 events");
+        assert!(recording.warnings.is_empty(), "expected no warnings");
+    }
+
+    #[test]
+    fn test_happy_path_regression_real_session() {
+        let file = std::fs::File::open(testdata_path("real_session.cast")).unwrap();
+        let recording = parse(file).unwrap();
+        assert_eq!(recording.events.len(), 114, "expected 114 events");
+        assert!(recording.warnings.is_empty(), "expected no warnings");
+    }
+
+    // -----------------------------------------------------------------------
+    // New fixture tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_input_only() {
+        let file = std::fs::File::open(testdata_path("input_only.cast")).unwrap();
+        let recording = parse(file).unwrap();
+        assert_eq!(recording.header.version, 3);
+        assert_eq!(recording.header.width, 80);
+        assert_eq!(recording.header.height, 24);
+        assert_eq!(recording.events.len(), 3);
+        assert!(recording.warnings.is_empty());
+        // All events should be Input type
+        for event in &recording.events {
+            assert_eq!(event.event_type, EventType::Input);
+        }
+        // V3 relative intervals: 0.5, 0.5, 0.5 → absolute 0.5, 1.0, 1.5
+        let timestamps: Vec<f64> = recording.events.iter().map(|e| e.time).collect();
+        let expected = vec![0.5, 1.0, 1.5];
+        for (actual, exp) in timestamps.iter().zip(expected.iter()) {
+            assert!((actual - exp).abs() < 1e-9, "expected {exp}, got {actual}");
+        }
+    }
+
+    #[test]
+    fn test_parse_sub_second() {
+        let file = std::fs::File::open(testdata_path("sub_second.cast")).unwrap();
+        let recording = parse(file).unwrap();
+        assert_eq!(recording.header.version, 2);
+        assert_eq!(recording.header.width, 80);
+        assert_eq!(recording.header.height, 24);
+        assert_eq!(recording.events.len(), 3);
+        assert!(recording.warnings.is_empty());
+        let timestamps: Vec<f64> = recording.events.iter().map(|e| e.time).collect();
+        let expected = vec![0.1, 0.3, 0.5];
+        for (actual, exp) in timestamps.iter().zip(expected.iter()) {
+            assert!((actual - exp).abs() < 1e-9, "expected {exp}, got {actual}");
+        }
     }
 
     // -----------------------------------------------------------------------
