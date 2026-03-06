@@ -442,7 +442,31 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 7: Insta snapshot test for keyframe placement
+    // Test 7: Keyframe count for real_session.cast matches expected formula
+    // -----------------------------------------------------------------------
+    #[test]
+    fn real_session_keyframe_count_matches_formula() {
+        let recording = load_test_recording("real_session.cast");
+        let raw_times: Vec<f64> = recording.events.iter().map(|e| e.time).collect();
+        let time_map = TimeMap::build(&raw_times, recording.header.idle_time_limit).unwrap();
+        let interval = 5.0_f64;
+        let index = KeyframeIndex::build(&recording, &time_map, interval);
+
+        let duration = time_map.duration();
+        // Expected: 1 initial keyframe at t=0 plus one for each full interval crossed.
+        // Formula: floor(duration / interval) + 1
+        let expected_count = (duration / interval).floor() as usize + 1;
+
+        assert_eq!(
+            index.len(),
+            expected_count,
+            "expected {expected_count} keyframes for duration={duration:.3}s with interval={interval}s, got {}",
+            index.len()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 8: Insta snapshot test for keyframe placement
     // -----------------------------------------------------------------------
     #[test]
     fn snapshot_keyframe_placement() {
