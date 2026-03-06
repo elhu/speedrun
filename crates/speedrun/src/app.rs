@@ -145,18 +145,24 @@ impl App {
                 self.show_controls = true;
             }
             Action::SeekForward30s => {
-                // TODO: implemented in Phase 3 epic
+                self.player.seek_relative(30.0);
                 self.show_controls = true;
+                self.last_interaction = Instant::now();
             }
             Action::SeekBackward30s => {
-                // TODO: implemented in Phase 3 epic
+                self.player.seek_relative(-30.0);
                 self.show_controls = true;
+                self.last_interaction = Instant::now();
             }
             Action::StepForward => {
-                // TODO: implemented in Phase 3 epic
+                self.player.step_forward();
+                self.show_controls = true;
+                self.last_interaction = Instant::now();
             }
             Action::StepBackward => {
-                // TODO: implemented in Phase 3 epic
+                self.player.step_backward();
+                self.show_controls = true;
+                self.last_interaction = Instant::now();
             }
             Action::SpeedUp => {
                 let new_speed = next_speed(self.player.speed(), 1);
@@ -171,19 +177,50 @@ impl App {
                 self.last_interaction = Instant::now();
             }
             Action::NextMarker => {
-                // TODO: implemented in Phase 3 epic
+                let current = self.player.current_time();
+                if let Some(marker) = self
+                    .player
+                    .markers()
+                    .iter()
+                    .find(|m| m.time > current + 0.001)
+                {
+                    self.player.seek(marker.time);
+                }
+                self.show_controls = true;
+                self.last_interaction = Instant::now();
             }
             Action::PrevMarker => {
-                // TODO: implemented in Phase 3 epic
+                let current = self.player.current_time();
+                if let Some(marker) = self
+                    .player
+                    .markers()
+                    .iter()
+                    .rev()
+                    .find(|m| m.time < current - 0.001)
+                {
+                    self.player.seek(marker.time);
+                }
+                self.show_controls = true;
+                self.last_interaction = Instant::now();
             }
-            Action::JumpToPercent(_) => {
-                // TODO: implemented in Phase 3 epic
+            Action::JumpToPercent(n) => {
+                let target = self.player.duration() * (n as f64) / 10.0;
+                self.player.seek(target);
+                self.show_controls = true;
+                self.last_interaction = Instant::now();
             }
             Action::JumpToStart => {
-                // TODO: implemented in Phase 3 epic
+                self.player.seek(0.0);
+                self.show_controls = true;
+                self.last_interaction = Instant::now();
             }
             Action::JumpToEnd => {
-                // TODO: implemented in Phase 3 epic
+                self.player.seek(self.player.duration());
+                if self.player.is_playing() {
+                    self.player.pause();
+                }
+                self.show_controls = true;
+                self.last_interaction = Instant::now();
             }
             Action::ToggleControls => {
                 // TODO: implemented in Phase 3 epic
@@ -393,5 +430,250 @@ mod tests {
         app.handle_action(Action::SpeedDown);
         assert!((app.player.speed() - 0.5).abs() < 1e-9);
         assert!(app.show_controls);
+    }
+
+    // ── 30s seek tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn seek_forward_30s_from_start() {
+        // minimal_v2.cast has duration 2.1s — seeking 30s forward should clamp to duration
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, false);
+
+        app.handle_action(Action::SeekForward30s);
+        assert!((app.player.current_time() - app.player.duration()).abs() < 1e-9);
+        assert!(app.show_controls);
+    }
+
+    #[test]
+    fn seek_backward_30s_clamps_to_zero() {
+        let mut player = load_player("minimal_v2.cast");
+        player.seek(1.5);
+        let mut app = App::new(player, false);
+
+        app.handle_action(Action::SeekBackward30s);
+        assert!((app.player.current_time() - 0.0).abs() < 1e-9);
+        assert!(app.show_controls);
+    }
+
+    // ── Stepping tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn step_forward_while_paused_advances() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, false);
+        assert!(!app.player.is_playing());
+
+        app.handle_action(Action::StepForward);
+        // First output event in minimal_v2.cast is at 0.5
+        assert!((app.player.current_time() - 0.5).abs() < 1e-9);
+        assert!(app.show_controls);
+    }
+
+    #[test]
+    fn step_backward_while_paused_goes_back() {
+        let mut player = load_player("minimal_v2.cast");
+        player.seek(1.5); // between events at 1.2 and 2.0
+        let mut app = App::new(player, false);
+        assert!(!app.player.is_playing());
+
+        app.handle_action(Action::StepBackward);
+        assert!((app.player.current_time() - 1.2).abs() < 1e-9);
+        assert!(app.show_controls);
+    }
+
+    #[test]
+    fn step_forward_while_playing_does_nothing() {
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        let mut app = App::new(player, false);
+        assert!(app.player.is_playing());
+
+        app.handle_action(Action::StepForward);
+        // Should remain at 0.0 since step_forward guards against playing
+        assert!((app.player.current_time() - 0.0).abs() < 1e-9);
+    }
+
+    // ── Marker navigation tests ──────────────────────────────────────────────
+
+    #[test]
+    fn next_marker_from_start() {
+        // with_markers.cast has markers at 3.0 and 7.0
+        let player = load_player("with_markers.cast");
+        let mut app = App::new(player, false);
+
+        app.handle_action(Action::NextMarker);
+        assert!((app.player.current_time() - 3.0).abs() < 1e-9);
+        assert!(app.show_controls);
+    }
+
+    #[test]
+    fn next_marker_from_first_marker() {
+        let mut player = load_player("with_markers.cast");
+        player.seek(3.0);
+        let mut app = App::new(player, false);
+
+        app.handle_action(Action::NextMarker);
+        assert!((app.player.current_time() - 7.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn next_marker_from_last_marker_does_nothing() {
+        let mut player = load_player("with_markers.cast");
+        player.seek(7.0);
+        let mut app = App::new(player, false);
+
+        app.handle_action(Action::NextMarker);
+        // Should stay at 7.0 since no marker after
+        assert!((app.player.current_time() - 7.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn prev_marker_from_last_marker() {
+        let mut player = load_player("with_markers.cast");
+        player.seek(7.0);
+        let mut app = App::new(player, false);
+
+        app.handle_action(Action::PrevMarker);
+        assert!((app.player.current_time() - 3.0).abs() < 1e-9);
+        assert!(app.show_controls);
+    }
+
+    #[test]
+    fn prev_marker_from_first_marker_does_nothing() {
+        let mut player = load_player("with_markers.cast");
+        player.seek(3.0);
+        let mut app = App::new(player, false);
+
+        app.handle_action(Action::PrevMarker);
+        // Should stay at 3.0 since no marker before
+        assert!((app.player.current_time() - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn prev_marker_from_mid_recording() {
+        let mut player = load_player("with_markers.cast");
+        player.seek(5.0); // between markers at 3.0 and 7.0
+        let mut app = App::new(player, false);
+
+        app.handle_action(Action::PrevMarker);
+        assert!((app.player.current_time() - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn marker_nav_no_markers_does_nothing() {
+        // minimal_v2.cast has no markers
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, false);
+
+        app.handle_action(Action::NextMarker);
+        assert!((app.player.current_time() - 0.0).abs() < 1e-9);
+
+        app.handle_action(Action::PrevMarker);
+        assert!((app.player.current_time() - 0.0).abs() < 1e-9);
+    }
+
+    // ── Percentage jump tests ────────────────────────────────────────────────
+
+    #[test]
+    fn jump_to_percent_0() {
+        let mut player = load_player("with_markers.cast");
+        player.seek(4.0);
+        let mut app = App::new(player, false);
+
+        app.handle_action(Action::JumpToPercent(0));
+        assert!((app.player.current_time() - 0.0).abs() < 1e-9);
+        assert!(app.show_controls);
+    }
+
+    #[test]
+    fn jump_to_percent_5() {
+        // with_markers.cast has duration 8.0, so 50% = 4.0
+        let player = load_player("with_markers.cast");
+        let mut app = App::new(player, false);
+        let duration = app.player.duration();
+
+        app.handle_action(Action::JumpToPercent(5));
+        let expected = duration * 0.5;
+        assert!(
+            (app.player.current_time() - expected).abs() < 1e-9,
+            "expected {expected}, got {}",
+            app.player.current_time()
+        );
+    }
+
+    #[test]
+    fn jump_to_percent_9() {
+        // with_markers.cast has duration 8.0, so 90% = 7.2
+        let player = load_player("with_markers.cast");
+        let mut app = App::new(player, false);
+        let duration = app.player.duration();
+
+        app.handle_action(Action::JumpToPercent(9));
+        let expected = duration * 0.9;
+        assert!(
+            (app.player.current_time() - expected).abs() < 1e-9,
+            "expected {expected}, got {}",
+            app.player.current_time()
+        );
+    }
+
+    // ── Jump to start/end tests ──────────────────────────────────────────────
+
+    #[test]
+    fn jump_to_start() {
+        let mut player = load_player("minimal_v2.cast");
+        player.seek(1.5);
+        let mut app = App::new(player, false);
+
+        app.handle_action(Action::JumpToStart);
+        assert!((app.player.current_time() - 0.0).abs() < 1e-9);
+        assert!(app.show_controls);
+    }
+
+    #[test]
+    fn jump_to_end_pauses_player() {
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        let mut app = App::new(player, false);
+        assert!(app.player.is_playing());
+
+        app.handle_action(Action::JumpToEnd);
+        assert!(
+            (app.player.current_time() - app.player.duration()).abs() < 1e-9,
+            "expected current_time == duration"
+        );
+        assert!(!app.player.is_playing(), "player should be paused at end");
+        assert!(app.show_controls);
+    }
+
+    #[test]
+    fn jump_to_end_already_paused() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, false);
+        assert!(!app.player.is_playing());
+
+        app.handle_action(Action::JumpToEnd);
+        assert!((app.player.current_time() - app.player.duration()).abs() < 1e-9);
+        assert!(!app.player.is_playing());
+    }
+
+    // ── Edge case: empty recording ───────────────────────────────────────────
+
+    #[test]
+    fn navigation_on_empty_recording_no_panic() {
+        let player = load_player("empty.cast");
+        let mut app = App::new(player, false);
+
+        // None of these should panic
+        app.handle_action(Action::SeekForward30s);
+        app.handle_action(Action::SeekBackward30s);
+        app.handle_action(Action::StepForward);
+        app.handle_action(Action::StepBackward);
+        app.handle_action(Action::NextMarker);
+        app.handle_action(Action::PrevMarker);
+        app.handle_action(Action::JumpToPercent(5));
+        app.handle_action(Action::JumpToStart);
+        app.handle_action(Action::JumpToEnd);
     }
 }
