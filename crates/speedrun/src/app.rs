@@ -1,3 +1,4 @@
+use crate::help::HelpOverlay;
 use crate::input::{Action, map_key_event};
 use crate::ui::{ControlsBar, TerminalView, ViewportState};
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
@@ -49,6 +50,10 @@ pub struct App {
     /// Timestamp of the last user interaction (keypress).
     pub last_interaction: Instant,
     pub should_quit: bool,
+    /// Whether the help overlay is currently visible.
+    pub help_visible: bool,
+    /// Whether playback was active before help was shown (for resume on dismiss).
+    was_playing_before_help: bool,
     viewport: ViewportState,
 }
 
@@ -62,6 +67,8 @@ impl App {
             controls_force_show: show_controls,
             last_interaction: Instant::now(),
             should_quit: false,
+            help_visible: false,
+            was_playing_before_help: false,
             viewport: ViewportState::default(),
         }
     }
@@ -81,6 +88,19 @@ impl App {
             return false;
         }
         true
+    }
+
+    fn show_help(&mut self) {
+        self.was_playing_before_help = self.player.is_playing();
+        self.player.pause();
+        self.help_visible = true;
+    }
+
+    fn dismiss_help(&mut self) {
+        self.help_visible = false;
+        if self.was_playing_before_help {
+            self.player.play();
+        }
     }
 
     pub fn run(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
@@ -176,6 +196,17 @@ impl App {
     }
 
     fn handle_action(&mut self, action: Action) {
+        // While help is visible, only allow toggle and quit (both dismiss help)
+        if self.help_visible {
+            match action {
+                Action::ToggleHelp | Action::Quit => {
+                    self.dismiss_help();
+                }
+                _ => {} // ignore all other actions
+            }
+            return;
+        }
+
         match action {
             Action::Quit => {
                 self.should_quit = true;
@@ -299,7 +330,7 @@ impl App {
                 }
             }
             Action::ToggleHelp => {
-                // TODO: implemented in Phase 3 epic
+                self.show_help();
             }
         }
     }
@@ -362,6 +393,11 @@ impl App {
             };
             let controls_rect = Self::controls_rect(area, rec_cols, rec_rows);
             frame.render_widget(controls, controls_rect);
+        }
+
+        // Render help overlay on top of everything when visible
+        if self.help_visible {
+            frame.render_widget(HelpOverlay, area);
         }
     }
 }
@@ -977,5 +1013,157 @@ mod tests {
             bottom_row.chars().any(|c| c != ' '),
             "Controls bar should render non-space content in bottom row, got: {bottom_row:?}"
         );
+    }
+
+    // ── Help overlay state preservation tests ────────────────────────────────
+
+    #[test]
+    fn toggle_help_while_playing_pauses_and_shows_overlay() {
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::ToggleHelp);
+
+        assert!(app.help_visible);
+        assert!(!app.player.is_playing()); // paused while help shown
+    }
+
+    #[test]
+    fn dismiss_help_resumes_if_was_playing() {
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::ToggleHelp); // show help (was playing)
+        app.handle_action(Action::ToggleHelp); // dismiss help
+
+        assert!(!app.help_visible);
+        assert!(app.player.is_playing()); // resumed
+    }
+
+    #[test]
+    fn toggle_help_while_paused_stays_paused_on_dismiss() {
+        let player = load_player("minimal_v2.cast");
+        // player starts paused — do NOT call play()
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::ToggleHelp); // show help (was paused)
+        assert!(app.help_visible);
+        assert!(!app.player.is_playing());
+
+        app.handle_action(Action::ToggleHelp); // dismiss help
+        assert!(!app.help_visible);
+        assert!(!app.player.is_playing()); // stays paused
+    }
+
+    // ── Esc / Quit behavior tests ─────────────────────────────────────────────
+
+    #[test]
+    fn esc_dismisses_help_when_visible() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::ToggleHelp); // show help
+        assert!(app.help_visible);
+
+        app.handle_action(Action::Quit); // Esc → dismiss, not quit
+        assert!(!app.help_visible);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn esc_quits_when_help_not_visible() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::Quit);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn q_dismisses_help_when_visible() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::ToggleHelp); // show help
+        app.handle_action(Action::Quit); // q → dismiss help
+
+        assert!(!app.help_visible);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn q_quits_after_help_dismissed() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::ToggleHelp); // show help
+        app.handle_action(Action::Quit); // q → dismiss help
+        app.handle_action(Action::Quit); // q again → now quits
+
+        assert!(app.should_quit);
+    }
+
+    // ── Action blocking tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn seek_forward_blocked_while_help_visible() {
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        let mut app = App::new(player, true);
+
+        let pos_before = app.player.current_time();
+        app.handle_action(Action::ToggleHelp); // show help
+        app.handle_action(Action::SeekForward); // should be blocked
+
+        assert_eq!(app.player.current_time(), pos_before);
+    }
+
+    #[test]
+    fn speed_up_blocked_while_help_visible() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        let speed_before = app.player.speed();
+        app.handle_action(Action::ToggleHelp); // show help
+        app.handle_action(Action::SpeedUp); // should be blocked
+
+        assert_eq!(app.player.speed(), speed_before);
+    }
+
+    #[test]
+    fn toggle_help_dismisses_overlay_while_visible() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::ToggleHelp); // show
+        assert!(app.help_visible);
+        app.handle_action(Action::ToggleHelp); // dismiss
+        assert!(!app.help_visible);
+    }
+
+    // ── Toggle cycle test ─────────────────────────────────────────────────────
+
+    #[test]
+    fn toggle_cycle_playing() {
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        let mut app = App::new(player, true);
+
+        // ? → help shown, paused
+        app.handle_action(Action::ToggleHelp);
+        assert!(app.help_visible);
+        assert!(!app.player.is_playing());
+
+        // ? → help dismissed, resumed
+        app.handle_action(Action::ToggleHelp);
+        assert!(!app.help_visible);
+        assert!(app.player.is_playing());
+
+        // ? → help shown again, paused
+        app.handle_action(Action::ToggleHelp);
+        assert!(app.help_visible);
+        assert!(!app.player.is_playing());
     }
 }
