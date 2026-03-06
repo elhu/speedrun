@@ -6,6 +6,8 @@ use ratatui::style::{Color, Modifier};
 use ratatui::widgets::Widget;
 use speedrun_core::CursorState;
 
+pub use crate::controls::ControlsBar;
+
 /// Tracks the visible portion of the recording when the host terminal
 /// is smaller than the recording dimensions.
 #[derive(Debug, Default, Clone)]
