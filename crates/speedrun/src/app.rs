@@ -1,9 +1,10 @@
 use crate::input::{Action, map_key_event};
-use crate::ui::{TerminalView, ViewportState};
+use crate::ui::{ControlsBar, TerminalView, ViewportState};
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use speedrun_core::Player;
 use std::time::{Duration, Instant};
 
@@ -39,7 +40,13 @@ fn next_speed(current: f64, direction: i8) -> f64 {
 
 pub struct App {
     pub player: Player,
-    pub show_controls: bool,
+    /// Whether the user has manually hidden the controls bar via Tab.
+    /// When true, controls are hidden regardless of other state.
+    pub controls_manually_hidden: bool,
+    /// Whether controls should be force-shown (e.g., just interacted, paused, at end).
+    /// Overrides the auto-hide timeout.
+    pub controls_force_show: bool,
+    /// Timestamp of the last user interaction (keypress).
     pub last_interaction: Instant,
     pub should_quit: bool,
     viewport: ViewportState,
@@ -47,24 +54,46 @@ pub struct App {
 
 impl App {
     pub fn new(player: Player, show_controls: bool) -> Self {
+        // If show_controls is false (--no-controls), start manually hidden.
+        // Otherwise, force-show for the initial 2s window.
         Self {
             player,
-            show_controls,
+            controls_manually_hidden: !show_controls,
+            controls_force_show: show_controls,
             last_interaction: Instant::now(),
             should_quit: false,
             viewport: ViewportState::default(),
         }
     }
 
+    /// Returns true if the controls bar should currently be visible.
+    pub fn controls_visible(&self) -> bool {
+        if self.controls_manually_hidden {
+            return false;
+        }
+        if self.controls_force_show {
+            return true;
+        }
+        // Auto-hide during playback after 2s of no interaction.
+        if self.player.is_playing()
+            && Instant::now().duration_since(self.last_interaction) > Duration::from_secs(2)
+        {
+            return false;
+        }
+        true
+    }
+
     pub fn run(&mut self, terminal: &mut Tui) -> std::io::Result<()> {
         let mut last_tick = Instant::now();
         let mut needs_redraw = true; // render first frame immediately
+        let mut last_controls_visible = self.controls_visible();
 
         loop {
             // Render (conditional)
             if needs_redraw {
                 terminal.draw(|frame| self.render(frame))?;
                 needs_redraw = false;
+                last_controls_visible = self.controls_visible();
             }
 
             // Compute timeout
@@ -99,6 +128,13 @@ impl App {
                 }
             }
 
+            // Trigger re-render if controls visibility changed (e.g., auto-hide fired)
+            let current_controls_visible = self.controls_visible();
+            if current_controls_visible != last_controls_visible {
+                needs_redraw = true;
+                last_controls_visible = current_controls_visible;
+            }
+
             if self.should_quit {
                 break;
             }
@@ -109,10 +145,21 @@ impl App {
     /// Compute the poll timeout based on time to next playback event.
     ///
     /// Falls back to 100ms when paused or at the end of the recording.
+    /// When controls are visible during playback, also accounts for the
+    /// auto-hide deadline to ensure a timely re-render.
     pub fn compute_timeout(&self) -> Duration {
-        self.player
+        let playback = self
+            .player
             .time_to_next_event()
-            .unwrap_or(Duration::from_millis(100))
+            .unwrap_or(Duration::from_millis(100));
+
+        if self.player.is_playing() && self.controls_visible() {
+            let elapsed = self.last_interaction.elapsed();
+            let hide_deadline = Duration::from_secs(2).saturating_sub(elapsed);
+            playback.min(hide_deadline.max(Duration::from_millis(10)))
+        } else {
+            playback
+        }
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -135,45 +182,63 @@ impl App {
             }
             Action::TogglePlayback => {
                 self.player.toggle();
+                if self.player.is_playing() {
+                    // Resumed: let auto-hide take over
+                    self.controls_force_show = false;
+                } else {
+                    // Paused: show controls
+                    self.controls_force_show = true;
+                    self.controls_manually_hidden = false;
+                }
             }
             Action::SeekForward => {
                 self.player.seek_relative(5.0);
-                self.show_controls = true;
+                self.controls_force_show = true;
+                self.controls_manually_hidden = false;
+                self.last_interaction = Instant::now();
             }
             Action::SeekBackward => {
                 self.player.seek_relative(-5.0);
-                self.show_controls = true;
+                self.controls_force_show = true;
+                self.controls_manually_hidden = false;
+                self.last_interaction = Instant::now();
             }
             Action::SeekForward30s => {
                 self.player.seek_relative(30.0);
-                self.show_controls = true;
+                self.controls_force_show = true;
+                self.controls_manually_hidden = false;
                 self.last_interaction = Instant::now();
             }
             Action::SeekBackward30s => {
                 self.player.seek_relative(-30.0);
-                self.show_controls = true;
+                self.controls_force_show = true;
+                self.controls_manually_hidden = false;
                 self.last_interaction = Instant::now();
             }
             Action::StepForward => {
                 self.player.step_forward();
-                self.show_controls = true;
+                self.controls_force_show = true;
+                self.controls_manually_hidden = false;
                 self.last_interaction = Instant::now();
             }
             Action::StepBackward => {
                 self.player.step_backward();
-                self.show_controls = true;
+                self.controls_force_show = true;
+                self.controls_manually_hidden = false;
                 self.last_interaction = Instant::now();
             }
             Action::SpeedUp => {
                 let new_speed = next_speed(self.player.speed(), 1);
                 self.player.set_speed(new_speed);
-                self.show_controls = true;
+                self.controls_force_show = true;
+                self.controls_manually_hidden = false;
                 self.last_interaction = Instant::now();
             }
             Action::SpeedDown => {
                 let new_speed = next_speed(self.player.speed(), -1);
                 self.player.set_speed(new_speed);
-                self.show_controls = true;
+                self.controls_force_show = true;
+                self.controls_manually_hidden = false;
                 self.last_interaction = Instant::now();
             }
             Action::NextMarker => {
@@ -186,7 +251,8 @@ impl App {
                 {
                     self.player.seek(marker.time);
                 }
-                self.show_controls = true;
+                self.controls_force_show = true;
+                self.controls_manually_hidden = false;
                 self.last_interaction = Instant::now();
             }
             Action::PrevMarker => {
@@ -200,18 +266,21 @@ impl App {
                 {
                     self.player.seek(marker.time);
                 }
-                self.show_controls = true;
+                self.controls_force_show = true;
+                self.controls_manually_hidden = false;
                 self.last_interaction = Instant::now();
             }
             Action::JumpToPercent(n) => {
                 let target = self.player.duration() * (n as f64) / 10.0;
                 self.player.seek(target);
-                self.show_controls = true;
+                self.controls_force_show = true;
+                self.controls_manually_hidden = false;
                 self.last_interaction = Instant::now();
             }
             Action::JumpToStart => {
                 self.player.seek(0.0);
-                self.show_controls = true;
+                self.controls_force_show = true;
+                self.controls_manually_hidden = false;
                 self.last_interaction = Instant::now();
             }
             Action::JumpToEnd => {
@@ -219,14 +288,42 @@ impl App {
                 if self.player.is_playing() {
                     self.player.pause();
                 }
-                self.show_controls = true;
+                self.controls_force_show = true;
+                self.controls_manually_hidden = false;
                 self.last_interaction = Instant::now();
             }
             Action::ToggleControls => {
-                // TODO: implemented in Phase 3 epic
+                self.controls_manually_hidden = !self.controls_manually_hidden;
+                if self.controls_manually_hidden {
+                    self.controls_force_show = false;
+                }
             }
             Action::ToggleHelp => {
                 // TODO: implemented in Phase 3 epic
+            }
+        }
+    }
+
+    /// Calculate the Rect for the controls bar based on host and recording dimensions.
+    ///
+    /// - When host is taller than recording: place controls immediately below recording.
+    /// - When host is same height or shorter: overlay the controls on the bottom row.
+    pub fn controls_rect(area: Rect, rec_cols: u16, rec_rows: u16) -> Rect {
+        if area.height > rec_rows {
+            // Host terminal taller than recording: place below recording content
+            Rect {
+                x: area.x,
+                y: area.y + rec_rows,
+                width: rec_cols.min(area.width),
+                height: 1,
+            }
+        } else {
+            // Host terminal same height or shorter: overlay bottom row
+            Rect {
+                x: area.x,
+                y: area.y + area.height.saturating_sub(1),
+                width: area.width,
+                height: 1,
             }
         }
     }
@@ -250,6 +347,22 @@ impl App {
             .with_scroll(self.viewport.scroll_x, self.viewport.scroll_y);
 
         frame.render_widget(view, area);
+
+        // Conditionally render controls bar
+        if self.controls_visible() {
+            let is_at_end =
+                !self.player.is_playing() && self.player.current_time() >= self.player.duration();
+            let controls = ControlsBar {
+                is_playing: self.player.is_playing(),
+                is_at_end,
+                current_time: self.player.current_time(),
+                duration: self.player.duration(),
+                speed: self.player.speed(),
+                marker_times: self.player.markers().iter().map(|m| m.time).collect(),
+            };
+            let controls_rect = Self::controls_rect(area, rec_cols, rec_rows);
+            frame.render_widget(controls, controls_rect);
+        }
     }
 }
 
@@ -321,7 +434,10 @@ mod tests {
         let expected = player.time_to_next_event().unwrap();
         let app = App::new(player, true);
 
-        assert_eq!(app.compute_timeout(), expected);
+        // Controls are visible initially (force_show=true), so compute_timeout
+        // returns min(playback_timeout, hide_deadline). Since last_interaction is
+        // just set, hide_deadline ≈ 2s, so playback timeout wins.
+        assert!(app.compute_timeout() <= expected);
     }
 
     #[test]
@@ -418,7 +534,7 @@ mod tests {
 
         app.handle_action(Action::SpeedUp);
         assert!((app.player.speed() - 1.5).abs() < 1e-9);
-        assert!(app.show_controls);
+        assert!(app.controls_force_show);
     }
 
     #[test]
@@ -429,7 +545,7 @@ mod tests {
 
         app.handle_action(Action::SpeedDown);
         assert!((app.player.speed() - 0.5).abs() < 1e-9);
-        assert!(app.show_controls);
+        assert!(app.controls_force_show);
     }
 
     // ── 30s seek tests ───────────────────────────────────────────────────────
@@ -442,7 +558,7 @@ mod tests {
 
         app.handle_action(Action::SeekForward30s);
         assert!((app.player.current_time() - app.player.duration()).abs() < 1e-9);
-        assert!(app.show_controls);
+        assert!(app.controls_force_show);
     }
 
     #[test]
@@ -453,7 +569,7 @@ mod tests {
 
         app.handle_action(Action::SeekBackward30s);
         assert!((app.player.current_time() - 0.0).abs() < 1e-9);
-        assert!(app.show_controls);
+        assert!(app.controls_force_show);
     }
 
     // ── Stepping tests ───────────────────────────────────────────────────────
@@ -467,7 +583,7 @@ mod tests {
         app.handle_action(Action::StepForward);
         // First output event in minimal_v2.cast is at 0.5
         assert!((app.player.current_time() - 0.5).abs() < 1e-9);
-        assert!(app.show_controls);
+        assert!(app.controls_force_show);
     }
 
     #[test]
@@ -479,7 +595,7 @@ mod tests {
 
         app.handle_action(Action::StepBackward);
         assert!((app.player.current_time() - 1.2).abs() < 1e-9);
-        assert!(app.show_controls);
+        assert!(app.controls_force_show);
     }
 
     #[test]
@@ -504,7 +620,7 @@ mod tests {
 
         app.handle_action(Action::NextMarker);
         assert!((app.player.current_time() - 3.0).abs() < 1e-9);
-        assert!(app.show_controls);
+        assert!(app.controls_force_show);
     }
 
     #[test]
@@ -536,7 +652,7 @@ mod tests {
 
         app.handle_action(Action::PrevMarker);
         assert!((app.player.current_time() - 3.0).abs() < 1e-9);
-        assert!(app.show_controls);
+        assert!(app.controls_force_show);
     }
 
     #[test]
@@ -583,7 +699,7 @@ mod tests {
 
         app.handle_action(Action::JumpToPercent(0));
         assert!((app.player.current_time() - 0.0).abs() < 1e-9);
-        assert!(app.show_controls);
+        assert!(app.controls_force_show);
     }
 
     #[test]
@@ -628,7 +744,7 @@ mod tests {
 
         app.handle_action(Action::JumpToStart);
         assert!((app.player.current_time() - 0.0).abs() < 1e-9);
-        assert!(app.show_controls);
+        assert!(app.controls_force_show);
     }
 
     #[test]
@@ -644,7 +760,7 @@ mod tests {
             "expected current_time == duration"
         );
         assert!(!app.player.is_playing(), "player should be paused at end");
-        assert!(app.show_controls);
+        assert!(app.controls_force_show);
     }
 
     #[test]
@@ -675,5 +791,191 @@ mod tests {
         app.handle_action(Action::JumpToPercent(5));
         app.handle_action(Action::JumpToStart);
         app.handle_action(Action::JumpToEnd);
+    }
+
+    // ── Visibility state machine tests ────────────────────────────────────────
+
+    #[test]
+    fn controls_visible_initial_show_controls_true() {
+        let player = load_player("minimal_v2.cast");
+        let app = App::new(player, true);
+        assert!(app.controls_visible());
+    }
+
+    #[test]
+    fn controls_visible_initial_no_controls() {
+        let player = load_player("minimal_v2.cast");
+        let app = App::new(player, false);
+        assert!(!app.controls_visible());
+    }
+
+    #[test]
+    fn controls_auto_hide_when_playing_and_idle() {
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        let mut app = App::new(player, true);
+        // Simulate 3 seconds of no interaction
+        app.last_interaction = Instant::now() - Duration::from_secs(3);
+        // force_show must be false for auto-hide to kick in
+        app.controls_force_show = false;
+        assert!(!app.controls_visible());
+    }
+
+    #[test]
+    fn controls_visible_within_2s_window() {
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        let mut app = App::new(player, true);
+        // Simulate 1 second of no interaction (within 2s window)
+        app.last_interaction = Instant::now() - Duration::from_secs(1);
+        app.controls_force_show = false;
+        assert!(app.controls_visible());
+    }
+
+    #[test]
+    fn controls_visible_after_seek_forward() {
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        let mut app = App::new(player, true);
+        // Simulate old interaction time
+        app.last_interaction = Instant::now() - Duration::from_secs(10);
+        app.controls_force_show = false;
+
+        app.handle_action(Action::SeekForward);
+
+        assert!(app.controls_visible());
+        // last_interaction should be recent
+        assert!(app.last_interaction.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn controls_visible_when_paused() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+        // Simulate old interaction, but player is paused
+        app.last_interaction = Instant::now() - Duration::from_secs(10);
+        app.controls_force_show = true; // force_show is set when paused
+        // Player is already paused by default (not playing)
+        assert!(app.controls_visible());
+    }
+
+    #[test]
+    fn controls_tab_toggle_hides_and_shows() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+        assert!(app.controls_visible());
+
+        // Tab hides
+        app.handle_action(Action::ToggleControls);
+        assert!(!app.controls_visible());
+
+        // Tab shows again
+        app.handle_action(Action::ToggleControls);
+        assert!(app.controls_visible());
+    }
+
+    #[test]
+    fn controls_manual_hide_persists_over_recent_interaction() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+        // Tab to hide
+        app.handle_action(Action::ToggleControls);
+        // Even with recent interaction, manually hidden stays hidden
+        app.last_interaction = Instant::now();
+        assert!(!app.controls_visible());
+    }
+
+    #[test]
+    fn controls_manual_hide_cleared_by_seek() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+        // Tab to hide
+        app.handle_action(Action::ToggleControls);
+        assert!(!app.controls_visible());
+
+        // Seek clears manual hide
+        app.handle_action(Action::SeekForward);
+        assert!(app.controls_visible());
+    }
+
+    #[test]
+    fn controls_visible_at_end_force_shown() {
+        let mut player = load_player("minimal_v2.cast");
+        player.play();
+        // Advance to end
+        player.tick(player.duration() + 10.0);
+        assert!(!player.is_playing()); // auto-paused
+
+        let mut app = App::new(player, true);
+        // On auto-pause at end, force_show should be true; simulate the state
+        // that would be set when TogglePlayback is called during pause detection.
+        // Here we directly set force_show to test the is_at_end case.
+        app.controls_force_show = true;
+        assert!(app.controls_visible());
+    }
+
+    // ── Overlay positioning tests ─────────────────────────────────────────────
+
+    #[test]
+    fn controls_rect_below_recording_when_host_taller() {
+        // Host 80x30, recording 80x24 → controls at y=24
+        let area = Rect::new(0, 0, 80, 30);
+        let rect = App::controls_rect(area, 80, 24);
+        assert_eq!(rect.y, 24);
+        assert_eq!(rect.height, 1);
+        assert_eq!(rect.width, 80);
+    }
+
+    #[test]
+    fn controls_rect_overlay_when_host_same_height() {
+        // Host 80x24, recording 80x24 → controls at y=23 (overlay bottom row)
+        let area = Rect::new(0, 0, 80, 24);
+        let rect = App::controls_rect(area, 80, 24);
+        assert_eq!(rect.y, 23);
+        assert_eq!(rect.height, 1);
+        assert_eq!(rect.width, 80);
+    }
+
+    #[test]
+    fn controls_rect_overlay_when_host_shorter() {
+        // Host 60x20, recording 80x24 → controls at y=19 (overlay)
+        let area = Rect::new(0, 0, 60, 20);
+        let rect = App::controls_rect(area, 80, 24);
+        assert_eq!(rect.y, 19);
+        assert_eq!(rect.height, 1);
+        assert_eq!(rect.width, 60);
+    }
+
+    // ── Render integration test with controls ─────────────────────────────────
+
+    #[test]
+    fn render_with_controls_bar_visible() {
+        let mut player = load_player("minimal_v2.cast");
+        // Pause the player (controls should be visible)
+        // Player starts paused by default
+        let (cols, rows) = player.size();
+        player.seek(player.duration());
+
+        let mut app = App::new(player, true);
+
+        // Use a backend bigger than recording so controls go below
+        let backend = TestBackend::new(cols, rows + 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|f| app.render(f)).unwrap();
+
+        // Controls bar should be on the row after the recording (y = rows)
+        let buf = terminal.backend().buffer();
+        // The controls bar fills the bottom row with a dark gray background
+        // At minimum, the state icon should appear — check it's non-empty
+        let bottom_row: String = (0..cols)
+            .map(|x| buf.get(x, rows).symbol().to_string())
+            .collect();
+        // Controls bar was rendered — it contains content (not all spaces from a blank terminal)
+        // The paused icon is "▮▮" or end icon "■ ". Check it's not all spaces.
+        assert!(
+            bottom_row.chars().any(|c| c != ' '),
+            "Controls bar should render non-space content in bottom row, got: {bottom_row:?}"
+        );
     }
 }
