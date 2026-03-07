@@ -383,7 +383,6 @@ pub fn parse(reader: impl std::io::Read) -> Result<Recording, ParseError> {
     // 2. Event parsing (lenient — malformed lines become warnings)
     // -----------------------------------------------------------------------
     let mut events = Vec::new();
-    let mut markers = Vec::new();
     let mut warnings = Vec::new();
     let mut line_number: usize = 1; // header is line 1
     // prev_time is updated only when a V2 event is successfully parsed.
@@ -480,8 +479,10 @@ pub fn parse(reader: impl std::io::Read) -> Result<Recording, ParseError> {
             absolute_time += raw_time;
             absolute_time
         } else {
-            // V2: timestamps are absolute; check monotonicity against the last
-            // *valid* event's timestamp.
+            // V2: timestamps are absolute. Emit a warning for out-of-order
+            // events but still accept them — they will be sorted after the
+            // loop so appended markers (whose raw times may be earlier than
+            // the last event) are not silently dropped.
             if raw_time < prev_time {
                 warnings.push(ParseWarning {
                     line_number,
@@ -489,9 +490,11 @@ pub fn parse(reader: impl std::io::Read) -> Result<Recording, ParseError> {
                         "timestamps must be non-decreasing (got {raw_time} after {prev_time}): {line}"
                     ),
                 });
-                continue;
+            } else {
+                // Only advance prev_time for in-order events so the warning
+                // accurately identifies which events are out of order.
+                prev_time = raw_time;
             }
-            prev_time = raw_time;
             raw_time
         };
 
@@ -567,13 +570,6 @@ pub fn parse(reader: impl std::io::Read) -> Result<Recording, ParseError> {
                 };
                 EventData::Resize { cols, rows }
             }
-            EventType::Marker => {
-                markers.push(Marker {
-                    time,
-                    label: data_str.to_string(),
-                });
-                EventData::Text(data_str.to_string())
-            }
             _ => EventData::Text(data_str.to_string()),
         };
 
@@ -583,6 +579,30 @@ pub fn parse(reader: impl std::io::Read) -> Result<Recording, ParseError> {
             data,
         });
     }
+
+    // Sort events by timestamp (stable sort preserves file order for ties).
+    // This is a no-op for properly-ordered v2 files and for v3 files (whose
+    // accumulated absolute times are monotonically increasing by construction).
+    // For v2 files with appended out-of-order events (e.g. appended markers),
+    // this places every event at its correct chronological position.
+    events.sort_by(|a, b| {
+        a.time
+            .partial_cmp(&b.time)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Re-derive markers from the now-sorted events so their order matches.
+    let markers: Vec<Marker> = events
+        .iter()
+        .filter(|e| e.event_type == EventType::Marker)
+        .map(|e| Marker {
+            time: e.time,
+            label: match &e.data {
+                EventData::Text(s) => s.clone(),
+                _ => String::new(),
+            },
+        })
+        .collect();
 
     Ok(Recording {
         header,
@@ -846,13 +866,16 @@ mod tests {
 [3.0, "o", "b"]
 [2.0, "o", "c"]
 "#;
-        // Under lenient parsing: Ok with 1 warning (line 4 skipped), 2 events
+        // Out-of-order events are now accepted and sorted; a warning is still
+        // emitted for diagnostics.
         let recording = parse(Cursor::new(input)).unwrap();
         assert_eq!(
             recording.events.len(),
-            2,
-            "expected 2 events (t=1.0 and t=3.0 kept, t=2.0 skipped)"
+            3,
+            "expected 3 events (all accepted and sorted)"
         );
+        let timestamps: Vec<f64> = recording.events.iter().map(|e| e.time).collect();
+        assert_eq!(timestamps, vec![1.0, 2.0, 3.0], "events should be sorted");
         assert_eq!(
             recording.warnings.len(),
             1,
@@ -1144,5 +1167,120 @@ mod tests {
         let event = make_event(EventType::Marker, EventData::Text("my-marker".into()));
         let changed = feed_event(&mut vt, &event);
         assert!(!changed, "Marker event should return false");
+    }
+
+    // -----------------------------------------------------------------------
+    // Out-of-order event acceptance tests (speedrun-fr8.1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_out_of_order_marker_accepted() {
+        // V2 file: output events at t=1.0, 3.0, 8.0; marker appended after
+        // t=8.0 but with a raw time of 5.0 (simulates appended marker).
+        let input = r#"{"version": 2, "width": 80, "height": 24}
+[1.0, "o", "a"]
+[3.0, "o", "b"]
+[8.0, "o", "c"]
+[5.0, "m", "mid"]
+"#;
+        let recording = parse(Cursor::new(input)).unwrap();
+        // All 4 events accepted and sorted by time.
+        assert_eq!(recording.events.len(), 4, "expected 4 events");
+        let timestamps: Vec<f64> = recording.events.iter().map(|e| e.time).collect();
+        assert_eq!(
+            timestamps,
+            vec![1.0, 3.0, 5.0, 8.0],
+            "events should be sorted by time"
+        );
+        // Marker appears between t=3.0 and t=8.0.
+        assert_eq!(recording.events[2].event_type, EventType::Marker);
+        // Markers vec has 1 entry at time 5.0.
+        assert_eq!(recording.markers.len(), 1);
+        assert!((recording.markers[0].time - 5.0).abs() < 1e-9);
+        assert_eq!(recording.markers[0].label, "mid");
+    }
+
+    #[test]
+    fn test_out_of_order_multiple_events_sorted() {
+        // V2 file with all events out of order: 5.0, 1.0, 3.0.
+        let input = r#"{"version": 2, "width": 80, "height": 24}
+[5.0, "o", "c"]
+[1.0, "o", "a"]
+[3.0, "o", "b"]
+"#;
+        let recording = parse(Cursor::new(input)).unwrap();
+        assert_eq!(recording.events.len(), 3, "expected 3 events");
+        let timestamps: Vec<f64> = recording.events.iter().map(|e| e.time).collect();
+        assert_eq!(timestamps, vec![1.0, 3.0, 5.0], "events should be sorted");
+    }
+
+    #[test]
+    fn test_out_of_order_emits_warning() {
+        // Same setup as test_out_of_order_marker_accepted: the out-of-order
+        // marker should trigger a warning but still be accepted.
+        let input = r#"{"version": 2, "width": 80, "height": 24}
+[1.0, "o", "a"]
+[3.0, "o", "b"]
+[8.0, "o", "c"]
+[5.0, "m", "mid"]
+"#;
+        let recording = parse(Cursor::new(input)).unwrap();
+        // A warning must be emitted mentioning "non-decreasing".
+        assert!(
+            !recording.warnings.is_empty(),
+            "expected at least one warning for out-of-order event"
+        );
+        assert!(
+            recording
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("non-decreasing")),
+            "expected warning containing 'non-decreasing', got: {:?}",
+            recording.warnings
+        );
+    }
+
+    #[test]
+    fn test_stable_sort_preserves_file_order() {
+        // Two output events with the same timestamp: file order must be preserved.
+        let input = r#"{"version": 2, "width": 80, "height": 24}
+[1.0, "o", "first"]
+[1.0, "o", "second"]
+"#;
+        let recording = parse(Cursor::new(input)).unwrap();
+        assert_eq!(recording.events.len(), 2, "expected 2 events");
+        match &recording.events[0].data {
+            EventData::Text(s) => assert_eq!(s, "first", "first event should have data 'first'"),
+            _ => panic!("expected Text data"),
+        }
+        match &recording.events[1].data {
+            EventData::Text(s) => assert_eq!(s, "second", "second event should have data 'second'"),
+            _ => panic!("expected Text data"),
+        }
+    }
+
+    #[test]
+    fn test_v3_unaffected_by_sort() {
+        // V3 file with relative timestamps 0.5, 0.7, 0.8.
+        // Accumulated absolute times: 0.5, 1.2, 2.0.
+        let input = r#"{"version": 3, "term": {"cols": 80, "rows": 24}}
+[0.5, "o", "a"]
+[0.7, "o", "b"]
+[0.8, "o", "c"]
+"#;
+        let recording = parse(Cursor::new(input)).unwrap();
+        assert_eq!(recording.events.len(), 3, "expected 3 events");
+        assert!(
+            recording.warnings.is_empty(),
+            "expected no warnings for v3 file"
+        );
+        let expected = [0.5_f64, 1.2, 2.0];
+        for (i, &exp) in expected.iter().enumerate() {
+            assert!(
+                (recording.events[i].time - exp).abs() < 1e-9,
+                "event[{i}] time: expected {exp}, got {}",
+                recording.events[i].time
+            );
+        }
     }
 }
