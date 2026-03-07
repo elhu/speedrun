@@ -1,3 +1,10 @@
+//! Raw-to-effective time mapping with idle capping.
+//!
+//! When a recording contains long idle pauses, the [`TimeMap`] compresses
+//! them by capping inter-event gaps to a configurable limit. This produces
+//! a parallel array of "effective" timestamps that preserves event ordering
+//! while making playback duration manageable.
+
 use std::fmt;
 
 /// Mapping from raw timestamps to effective (idle-capped) timestamps.

@@ -34,8 +34,11 @@ pub struct TerminalSnapshot {
 /// We define our own type because `avt::Cursor` is not publicly importable.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CursorState {
+    /// Zero-based column position.
     pub col: usize,
+    /// Zero-based row position.
     pub row: usize,
+    /// Whether the cursor is visible.
     pub visible: bool,
 }
 
