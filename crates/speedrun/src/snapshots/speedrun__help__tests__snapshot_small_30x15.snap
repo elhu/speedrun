@@ -12,8 +12,8 @@ expression: output
 │   ← →           Seek ±5s   │
 │   Shift+← →     Seek ±30s  │
 │   . ,           Step forwa │
-│   ] [           Next / pre │
 │   0-9           Jump to 0% │
 │   Home / g      Jump to st │
 │   End / G       Jump to en │
+│                            │
 └────────────────────────────┘

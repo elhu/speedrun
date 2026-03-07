@@ -1058,6 +1058,57 @@ mod tests {
         assert!((app.player.current_time() - 0.0).abs() < 1e-9);
     }
 
+    #[test]
+    fn test_space_resumes_after_auto_pause() {
+        // Load with_markers.cast, create App with pause_at_markers: true.
+        // Seek to a marker time (paused state), press Space. Assert is_playing().
+        let mut player = load_player("with_markers.cast");
+        player.seek(3.0); // seek to first marker
+        // Player is paused after seek
+        assert!(!player.is_playing());
+
+        let mut app = App::new(player, false, true); // pause_at_markers = true
+
+        // Press Space to resume playback
+        app.handle_action(Action::TogglePlayback);
+        assert!(
+            app.player.is_playing(),
+            "player should be playing after Space at marker"
+        );
+    }
+
+    #[test]
+    fn test_no_retrigger_at_same_marker() {
+        // Create two markers at 3.0 and 7.0. Call find_crossed_marker with
+        // prev_time=3.0, new_time=4.0. Assert None (marker at 3.0 not re-triggered
+        // since 3.0 is not strictly greater than prev_time=3.0).
+        let markers = vec![
+            speedrun_core::Marker {
+                time: 3.0,
+                label: String::new(),
+            },
+            speedrun_core::Marker {
+                time: 7.0,
+                label: String::new(),
+            },
+        ];
+
+        // prev_time=3.0, new_time=4.0: marker at 3.0 has time <= 3.0 (not > 3.0), so None
+        let result = find_crossed_marker(&markers, 3.0, 4.0);
+        assert!(
+            result.is_none(),
+            "marker at 3.0 should not re-trigger when prev_time=3.0"
+        );
+
+        // Sanity check: marker at 7.0 is detected when crossing from 6.0 to 7.0
+        let result2 = find_crossed_marker(&markers, 6.0, 7.0);
+        assert!(
+            result2.is_some(),
+            "marker at 7.0 should be detected when crossing (6.0, 7.0]"
+        );
+        assert!((result2.unwrap() - 7.0).abs() < 1e-9);
+    }
+
     // ── Percentage jump tests ────────────────────────────────────────────────
 
     #[test]
