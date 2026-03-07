@@ -70,6 +70,8 @@ pub enum InputMode {
     SearchInput,
     /// Confirmation prompt for file modification.
     ConfirmFileModify,
+    /// Keys are captured for the marker label text field.
+    MarkerLabelInput,
 }
 
 /// Tracks the pending marker action type for the confirmation dialog.
@@ -77,6 +79,7 @@ pub enum InputMode {
 enum PendingMarkerAction {
     None,
     Unlabeled,
+    Labeled,
 }
 
 pub struct App {
@@ -121,6 +124,8 @@ pub struct App {
     pub marker_feedback: Option<Instant>,
     /// Transient error message for marker operations.
     pub marker_error_feedback: Option<(String, Instant)>,
+    /// Buffer for text being typed in the marker label input.
+    pub marker_label_input: String,
 }
 
 impl App {
@@ -154,6 +159,7 @@ impl App {
             was_playing_before_marker: false,
             marker_feedback: None,
             marker_error_feedback: None,
+            marker_label_input: String::new(),
         }
     }
 
@@ -219,6 +225,11 @@ impl App {
                 self.input_mode = InputMode::Normal;
                 match self.pending_marker_action {
                     PendingMarkerAction::Unlabeled => self.execute_marker_creation(),
+                    PendingMarkerAction::Labeled => {
+                        self.marker_label_input.clear();
+                        self.input_mode = InputMode::MarkerLabelInput;
+                        // Don't resume playback yet — stay paused during label input
+                    }
                     PendingMarkerAction::None => {}
                 }
             }
@@ -409,6 +420,7 @@ impl App {
         match self.input_mode {
             InputMode::SearchInput => self.handle_search_input(key),
             InputMode::ConfirmFileModify => self.handle_confirm_input(key),
+            InputMode::MarkerLabelInput => self.handle_marker_label_input(key),
             InputMode::Normal => {
                 if let Some(action) = map_key_event(key) {
                     self.handle_action(action);
@@ -450,6 +462,40 @@ impl App {
                 self.search_input.push(c);
             }
             _ => {} // Ignore other keys (arrows, etc.)
+        }
+    }
+
+    /// Handle key events while in MarkerLabelInput mode.
+    fn handle_marker_label_input(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+                self.marker_label_input.clear();
+                self.cancel_pending_marker();
+            }
+            KeyCode::Enter => {
+                let label = self.marker_label_input.drain(..).collect::<String>();
+                self.input_mode = InputMode::Normal;
+                // Create marker with the entered label (empty label is valid)
+                if let Some(line) = self.player.add_marker(label) {
+                    self.append_marker_to_file(&line);
+                }
+                self.controls_force_show = true;
+                self.controls_manually_hidden = false;
+                if self.was_playing_before_marker {
+                    self.player.play();
+                    self.controls_force_show = false;
+                }
+                self.pending_marker_action = PendingMarkerAction::None;
+                self.pending_marker_time = None;
+            }
+            KeyCode::Backspace => {
+                self.marker_label_input.pop();
+            }
+            KeyCode::Char(c) => {
+                self.marker_label_input.push(c);
+            }
+            _ => {} // ignore arrows, etc.
         }
     }
 
@@ -681,6 +727,36 @@ impl App {
                     self.execute_marker_creation();
                 }
             }
+            Action::AddLabeledMarker => {
+                // No file path → transient error
+                if self.file_path.is_none() {
+                    self.marker_error_feedback = Some((
+                        "Cannot add marker: reading from stdin".into(),
+                        Instant::now(),
+                    ));
+                    return;
+                }
+                // V3 recordings not supported
+                if self.player.version() == 3 {
+                    self.marker_error_feedback = Some((
+                        "Cannot add marker: v3 recordings not supported".into(),
+                        Instant::now(),
+                    ));
+                    return;
+                }
+                // Capture time and pause
+                self.pending_marker_time = Some(self.player.current_time());
+                self.was_playing_before_marker = self.player.is_playing();
+                self.player.pause();
+                self.pending_marker_action = PendingMarkerAction::Labeled;
+                // Need confirmation?
+                if !self.file_modify_confirmed {
+                    self.input_mode = InputMode::ConfirmFileModify;
+                } else {
+                    self.marker_label_input.clear();
+                    self.input_mode = InputMode::MarkerLabelInput;
+                }
+            }
         }
     }
 
@@ -808,6 +884,30 @@ impl App {
                     Style::default().fg(Color::Yellow),
                 ),
                 Span::raw("[y/N] "),
+            ]);
+            let bar =
+                Paragraph::new(line).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+            frame.render_widget(bar, bar_rect);
+        }
+
+        // Render marker label input bar when in MarkerLabelInput mode
+        if self.input_mode == InputMode::MarkerLabelInput {
+            let bar_rect = Rect {
+                x: area.x,
+                y: area.y + area.height.saturating_sub(1),
+                width: area.width,
+                height: 1,
+            };
+            let available = bar_rect.width.saturating_sub(17) as usize; // "Marker label: " + cursor
+            let display_text = if self.marker_label_input.len() > available {
+                &self.marker_label_input[self.marker_label_input.len() - available..]
+            } else {
+                &self.marker_label_input
+            };
+            let line = Line::from(vec![
+                Span::styled("Marker label: ", Style::default().fg(Color::Yellow)),
+                Span::raw(display_text),
+                Span::styled("█", Style::default().fg(Color::White)),
             ]);
             let bar =
                 Paragraph::new(line).style(Style::default().bg(Color::DarkGray).fg(Color::White));
@@ -2368,5 +2468,172 @@ mod tests {
             "Expected to navigate to new marker at 5.0, got {}",
             app.player.current_time()
         );
+    }
+
+    // ── Labeled marker authoring tests ───────────────────────────────────────
+
+    #[test]
+    fn test_shift_m_enters_label_input_when_confirmed() {
+        let (mut app, _tmp) = make_marker_app("with_markers.cast");
+        app.file_modify_confirmed = true;
+
+        app.handle_action(Action::AddLabeledMarker);
+
+        assert_eq!(app.input_mode, InputMode::MarkerLabelInput);
+        assert!(!app.player.is_playing()); // paused during label input
+    }
+
+    #[test]
+    fn test_shift_m_enters_confirm_when_not_confirmed() {
+        let (mut app, _tmp) = make_marker_app("with_markers.cast");
+        assert!(!app.file_modify_confirmed);
+
+        app.handle_action(Action::AddLabeledMarker);
+
+        assert_eq!(app.input_mode, InputMode::ConfirmFileModify);
+        assert_eq!(app.pending_marker_action, PendingMarkerAction::Labeled);
+    }
+
+    #[test]
+    fn test_confirm_y_for_labeled_enters_label_input() {
+        let (mut app, _tmp) = make_marker_app("with_markers.cast");
+
+        app.handle_action(Action::AddLabeledMarker);
+        assert_eq!(app.input_mode, InputMode::ConfirmFileModify);
+
+        // Press 'y' to confirm
+        app.handle_confirm_input(KeyEvent::new(
+            KeyCode::Char('y'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        // Should enter MarkerLabelInput, not Normal (marker not created yet)
+        assert_eq!(app.input_mode, InputMode::MarkerLabelInput);
+        assert!(app.file_modify_confirmed);
+    }
+
+    #[test]
+    fn test_label_input_enter_creates_labeled_marker() {
+        let (mut app, tmp) = make_marker_app("with_markers.cast");
+        app.file_modify_confirmed = true;
+        app.player.seek(5.0);
+        let markers_before = app.player.markers().len();
+
+        app.handle_action(Action::AddLabeledMarker);
+        assert_eq!(app.input_mode, InputMode::MarkerLabelInput);
+
+        // Type "chapter-1"
+        for c in "chapter-1".chars() {
+            app.handle_marker_label_input(KeyEvent::new(
+                KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        assert_eq!(app.marker_label_input, "chapter-1");
+
+        // Press Enter to commit
+        app.handle_marker_label_input(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.player.markers().len(), markers_before + 1);
+        // Verify label in file
+        let contents = std::fs::read_to_string(tmp.path()).unwrap();
+        assert!(
+            contents.contains("chapter-1"),
+            "File should contain the marker label"
+        );
+    }
+
+    #[test]
+    fn test_label_input_enter_empty_creates_unlabeled() {
+        let (mut app, _tmp) = make_marker_app("with_markers.cast");
+        app.file_modify_confirmed = true;
+        app.player.seek(5.0);
+        let markers_before = app.player.markers().len();
+
+        app.handle_action(Action::AddLabeledMarker);
+        assert_eq!(app.input_mode, InputMode::MarkerLabelInput);
+
+        // Press Enter with empty buffer
+        app.handle_marker_label_input(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.player.markers().len(), markers_before + 1);
+    }
+
+    #[test]
+    fn test_label_input_esc_cancels() {
+        let (mut app, _tmp) = make_marker_app("with_markers.cast");
+        app.file_modify_confirmed = true;
+        app.player.seek(5.0);
+        let markers_before = app.player.markers().len();
+
+        app.handle_action(Action::AddLabeledMarker);
+        assert_eq!(app.input_mode, InputMode::MarkerLabelInput);
+
+        // Type some text
+        for c in "test".chars() {
+            app.handle_marker_label_input(KeyEvent::new(
+                KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+
+        // Press Esc to cancel
+        app.handle_marker_label_input(KeyEvent::new(
+            KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.marker_label_input.is_empty());
+        assert_eq!(app.player.markers().len(), markers_before); // no marker created
+    }
+
+    #[test]
+    fn test_label_input_backspace() {
+        let (mut app, _tmp) = make_marker_app("with_markers.cast");
+        app.file_modify_confirmed = true;
+
+        app.handle_action(Action::AddLabeledMarker);
+        assert_eq!(app.input_mode, InputMode::MarkerLabelInput);
+
+        // Type "abc"
+        for c in "abc".chars() {
+            app.handle_marker_label_input(KeyEvent::new(
+                KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        assert_eq!(app.marker_label_input, "abc");
+
+        // Press Backspace
+        app.handle_marker_label_input(KeyEvent::new(
+            KeyCode::Backspace,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.marker_label_input, "ab");
+    }
+
+    #[test]
+    fn test_label_input_char_appends() {
+        let (mut app, _tmp) = make_marker_app("with_markers.cast");
+        app.file_modify_confirmed = true;
+
+        app.handle_action(Action::AddLabeledMarker);
+        assert_eq!(app.input_mode, InputMode::MarkerLabelInput);
+
+        // Type 'x'
+        app.handle_marker_label_input(KeyEvent::new(
+            KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.marker_label_input, "x");
     }
 }
