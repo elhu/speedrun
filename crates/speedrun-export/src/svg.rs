@@ -461,54 +461,61 @@ pub fn export_animated_svg(
         b = bg.b
     )?;
 
-    // Build CSS style block
-    let total_duration = if duration > 0.0 { duration } else { 1.0 };
-    let mut style = String::from("<style>");
+    if frames.len() == 1 {
+        // Single-frame recording: render statically with no animation overhead
+        out.push_str("<g>");
+        out.push_str(&frames[0].content);
+        out.push_str("</g>");
+    } else {
+        // Build CSS style block
+        let total_duration = if duration > 0.0 { duration } else { 1.0 };
+        let mut style = String::from("<style>");
 
-    for (i, frame) in frames.iter().enumerate() {
-        let start_pct = frame.start_time / total_duration * 100.0;
-        let end_pct = frame.end_time / total_duration * 100.0;
-        let anim_duration = total_duration;
+        for (i, frame) in frames.iter().enumerate() {
+            let start_pct = frame.start_time / total_duration * 100.0;
+            let end_pct = frame.end_time / total_duration * 100.0;
+            let anim_duration = total_duration;
 
-        if i == 0 {
-            // First frame: starts visible, becomes hidden at end_pct
-            write!(
-                style,
-                "#f{i}{{animation:a{i} {anim_duration:.3}s step-end forwards;}}"
-            )?;
-            write!(
-                style,
-                "@keyframes a{i}{{0%{{visibility:visible}}{end_pct:.4}%{{visibility:hidden}}}}"
-            )?;
-        } else {
-            // Other frames: start hidden, become visible at start_pct
-            write!(
-                style,
-                "#f{i}{{visibility:hidden;animation:a{i} {anim_duration:.3}s step-end forwards;}}"
-            )?;
-            if i == frames.len() - 1 {
-                // Last frame: stays visible (animation-fill-mode: forwards handles this)
+            if i == 0 {
+                // First frame: starts visible, becomes hidden at end_pct
                 write!(
                     style,
-                    "@keyframes a{i}{{{start_pct:.4}%{{visibility:visible}}}}"
+                    "#f{i}{{animation:a{i} {anim_duration:.3}s step-end infinite;}}"
+                )?;
+                write!(
+                    style,
+                    "@keyframes a{i}{{0%{{visibility:visible}}{end_pct:.4}%{{visibility:hidden}}}}"
                 )?;
             } else {
+                // Other frames: start hidden, become visible at start_pct
                 write!(
                     style,
-                    "@keyframes a{i}{{{start_pct:.4}%{{visibility:visible}}{end_pct:.4}%{{visibility:hidden}}}}"
+                    "#f{i}{{visibility:hidden;animation:a{i} {anim_duration:.3}s step-end infinite;}}"
                 )?;
+                if i == frames.len() - 1 {
+                    // Last frame: explicitly hidden at 100% so iteration boundary is clean
+                    write!(
+                        style,
+                        "@keyframes a{i}{{{start_pct:.4}%{{visibility:visible}}100%{{visibility:hidden}}}}"
+                    )?;
+                } else {
+                    write!(
+                        style,
+                        "@keyframes a{i}{{{start_pct:.4}%{{visibility:visible}}{end_pct:.4}%{{visibility:hidden}}}}"
+                    )?;
+                }
             }
         }
-    }
 
-    style.push_str("</style>");
-    out.push_str(&style);
+        style.push_str("</style>");
+        out.push_str(&style);
 
-    // Render each frame as a <g> group
-    for (i, frame) in frames.iter().enumerate() {
-        write!(out, "<g id=\"f{i}\">")?;
-        out.push_str(&frame.content);
-        out.push_str("</g>");
+        // Render each frame as a <g> group
+        for (i, frame) in frames.iter().enumerate() {
+            write!(out, "<g id=\"f{i}\">")?;
+            out.push_str(&frame.content);
+            out.push_str("</g>");
+        }
     }
 
     out.push_str("</svg>");
@@ -938,12 +945,16 @@ mod tests {
 
     #[test]
     fn test_animated_single_frame_recording() {
-        let cast = "{\"version\":2,\"width\":80,\"height\":24}\n[0.5,\"o\",\"hello\"]";
+        // No output events → build_frames returns exactly 1 frame (initial blank)
+        let cast = "{\"version\":2,\"width\":80,\"height\":24}";
         let mut player = make_player(cast);
         let opts = AnimatedSvgOptions::default();
         let svg = export_animated_to_string(&mut player, &opts).unwrap();
-        let frame_count = svg.matches("<g id=\"f").count();
-        assert!(frame_count >= 1, "Should have at least 1 frame");
+        // Single-frame recordings render as static <g> with no id
+        assert!(
+            svg.contains("<g>"),
+            "Single-frame should have a plain <g> group"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1066,11 +1077,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Animated 8: animation-fill-mode forwards
+    // Animated 8: animation loops infinitely (not forwards)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_animated_fill_mode_forwards() {
+    fn test_animated_loops_infinitely() {
         let cast = concat!(
             "{\"version\":2,\"width\":80,\"height\":24}\n",
             "[0.5,\"o\",\"hello\\r\\n\"]\n",
@@ -1080,8 +1091,53 @@ mod tests {
         let opts = AnimatedSvgOptions::default();
         let svg = export_animated_to_string(&mut player, &opts).unwrap();
         assert!(
-            svg.contains("forwards"),
-            "Animated SVG should contain 'forwards' for animation-fill-mode"
+            svg.contains("infinite"),
+            "Animated SVG should contain 'infinite' for looping animation"
+        );
+        assert!(
+            !svg.contains("forwards"),
+            "Animated SVG must not contain 'forwards'"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Animated 8b: last frame keyframe has 100%{visibility:hidden}
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_animated_last_frame_hides_at_100_percent() {
+        let cast = concat!(
+            "{\"version\":2,\"width\":80,\"height\":24}\n",
+            "[0.5,\"o\",\"hello\\r\\n\"]\n",
+            "[1.5,\"o\",\"world\\r\\n\"]",
+        );
+        let mut player = make_player(cast);
+        let opts = AnimatedSvgOptions::default();
+        let svg = export_animated_to_string(&mut player, &opts).unwrap();
+        assert!(
+            svg.contains("100%{visibility:hidden}"),
+            "Last frame's @keyframes must include 100%{{visibility:hidden}}, got: {svg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Animated 8c: single-frame SVG has no <style> block
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_animated_single_frame_no_style_block() {
+        // No output events → build_frames returns exactly 1 frame (initial blank)
+        let cast = "{\"version\":2,\"width\":80,\"height\":24}";
+        let mut player = make_player(cast);
+        let opts = AnimatedSvgOptions::default();
+        let svg = export_animated_to_string(&mut player, &opts).unwrap();
+        assert!(
+            !svg.contains("<style>"),
+            "Single-frame animated SVG must have no <style> block"
+        );
+        assert!(
+            !svg.contains("@keyframes"),
+            "Single-frame animated SVG must have no @keyframes"
         );
     }
 
