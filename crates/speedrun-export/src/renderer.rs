@@ -28,6 +28,27 @@ use speedrun_core::CursorState;
 use crate::palette::{ExportOptions, Palette};
 
 // ---------------------------------------------------------------------------
+// FontError
+// ---------------------------------------------------------------------------
+
+/// Error type for font parsing/loading failures.
+#[derive(Debug)]
+pub enum FontError {
+    /// The font bytes could not be parsed as a valid TTF/OTF font.
+    Parse(&'static str),
+}
+
+impl std::fmt::Display for FontError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FontError::Parse(msg) => write!(f, "not a valid TTF/OTF font: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for FontError {}
+
+// ---------------------------------------------------------------------------
 // Embedded font
 // ---------------------------------------------------------------------------
 
@@ -70,9 +91,24 @@ impl ScreenRenderer {
     ///
     /// `scale` multiplies the base font size (16 px), and cell dimensions are
     /// derived from the font's metrics at that size.
-    pub fn new(export_opts: ExportOptions, scale: u32) -> Self {
-        let font = fontdue::Font::from_bytes(FONT_BYTES, fontdue::FontSettings::default())
-            .expect("embedded JetBrains Mono TTF should always parse successfully");
+    ///
+    /// `font_data` optionally specifies custom TTF/OTF font bytes to use for
+    /// regular text. If `None`, the embedded JetBrains Mono is used. Bold text
+    /// always uses the embedded JetBrains Mono Bold (or the same custom font
+    /// when `--font` is specified without a bold variant).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FontError::Parse`] if `font_data` cannot be parsed as a valid
+    /// TTF/OTF font.
+    pub fn new(
+        export_opts: ExportOptions,
+        scale: u32,
+        font_data: Option<&[u8]>,
+    ) -> Result<Self, FontError> {
+        let font_bytes = font_data.unwrap_or(FONT_BYTES);
+        let font = fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default())
+            .map_err(FontError::Parse)?;
 
         let bold_font =
             fontdue::Font::from_bytes(BOLD_FONT_BYTES, fontdue::FontSettings::default())
@@ -123,7 +159,7 @@ impl ScreenRenderer {
             bold_brightens: export_opts.bold_brightens,
         });
 
-        Self {
+        Ok(Self {
             font,
             bold_font,
             cell_width,
@@ -132,7 +168,7 @@ impl ScreenRenderer {
             ascent,
             palette,
             export_opts,
-        }
+        })
     }
 
     /// Render the current screen state to a pixel buffer.
@@ -397,7 +433,8 @@ mod tests {
     use super::*;
 
     fn default_renderer(scale: u32) -> ScreenRenderer {
-        ScreenRenderer::new(ExportOptions::default(), scale)
+        ScreenRenderer::new(ExportOptions::default(), scale, None)
+            .expect("embedded font should always parse")
     }
 
     /// Create a test VT with given content.
@@ -738,6 +775,38 @@ mod tests {
     // -----------------------------------------------------------------------
     // 14. Bold text renders without panic and with correct image dimensions
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // 15. ScreenRenderer::new() with None font_data succeeds (embedded font)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_new_with_none_font_data_succeeds() {
+        let result = ScreenRenderer::new(ExportOptions::default(), 1, None);
+        assert!(
+            result.is_ok(),
+            "ScreenRenderer::new() with None font_data should succeed using embedded font"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 16. ScreenRenderer::new() with invalid font bytes returns Err
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_new_with_invalid_font_bytes_returns_err() {
+        let bad_bytes: &[u8] = b"this is not a valid TTF/OTF font";
+        let result = ScreenRenderer::new(ExportOptions::default(), 1, Some(bad_bytes));
+        assert!(
+            result.is_err(),
+            "ScreenRenderer::new() with invalid font bytes should return Err"
+        );
+        let err = result.err().unwrap().to_string();
+        assert!(
+            err.contains("not a valid TTF/OTF font"),
+            "Error message should mention 'not a valid TTF/OTF font', got: {err}"
+        );
+    }
 
     #[test]
     fn test_bold_text_no_panic_and_correct_dimensions() {

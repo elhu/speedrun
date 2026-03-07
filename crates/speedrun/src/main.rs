@@ -118,6 +118,12 @@ enum ExportFormat {
         /// Overwrite output file if it already exists.
         #[arg(long)]
         force: bool,
+
+        /// Path to a monospace TTF/OTF font file. Bold text will use this same
+        /// font. If omitted, the embedded JetBrains Mono is used. A monospace
+        /// font is required; non-monospace fonts produce misaligned output.
+        #[arg(long)]
+        font: Option<std::path::PathBuf>,
     },
 }
 
@@ -271,8 +277,23 @@ fn run_export_gif(
     scale: u32,
     loop_count: u16,
     force: bool,
+    font: Option<std::path::PathBuf>,
 ) {
     use speedrun_export::gif::{GifOptions, export_gif};
+
+    let font_data: Option<Vec<u8>> = font.map(|font_path| {
+        std::fs::read(&font_path).unwrap_or_else(|e| {
+            match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    eprintln!("File not found: {}", font_path.display());
+                }
+                _ => {
+                    eprintln!("Cannot read font file {}: {e}", font_path.display());
+                }
+            }
+            std::process::exit(1);
+        })
+    });
 
     let mut player = load_player(
         &file,
@@ -291,6 +312,7 @@ fn run_export_gif(
         fps,
         scale,
         loop_count,
+        font_data,
         ..Default::default()
     };
 
@@ -350,13 +372,14 @@ fn main() {
                 scale,
                 loop_count,
                 force,
+                font,
             } => {
                 #[cfg(feature = "export")]
-                run_export_gif(file, output, fps, scale, loop_count, force);
+                run_export_gif(file, output, fps, scale, loop_count, force, font);
 
                 #[cfg(not(feature = "export"))]
                 {
-                    let _ = (file, output, fps, scale, loop_count, force);
+                    let _ = (file, output, fps, scale, loop_count, force, font);
                     eprintln!("Export feature not enabled. Rebuild with --features export.");
                     std::process::exit(1);
                 }

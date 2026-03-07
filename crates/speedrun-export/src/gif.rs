@@ -23,7 +23,7 @@ use image::RgbaImage;
 use speedrun_core::Player;
 
 use crate::palette::ExportOptions;
-use crate::renderer::ScreenRenderer;
+use crate::renderer::{FontError, ScreenRenderer};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -38,6 +38,8 @@ pub enum GifError {
     FpsTooHigh(u32),
     /// An error occurred during GIF encoding.
     Encoding(gif::EncodingError),
+    /// The provided font could not be parsed as a valid TTF/OTF font.
+    Font(FontError),
 }
 
 impl std::fmt::Display for GifError {
@@ -50,6 +52,7 @@ impl std::fmt::Display for GifError {
                  Use --fps 50 or lower (got {fps})."
             ),
             GifError::Encoding(e) => write!(f, "GIF encoding error: {e}"),
+            GifError::Font(e) => write!(f, "{e}"),
         }
     }
 }
@@ -60,7 +63,14 @@ impl std::error::Error for GifError {
             GifError::Io(e) => Some(e),
             GifError::FpsTooHigh(_) => None,
             GifError::Encoding(e) => Some(e),
+            GifError::Font(e) => Some(e),
         }
+    }
+}
+
+impl From<FontError> for GifError {
+    fn from(e: FontError) -> Self {
+        GifError::Font(e)
     }
 }
 
@@ -90,6 +100,11 @@ pub struct GifOptions {
     pub loop_count: u16,
     /// Color palette configuration.
     pub export: ExportOptions,
+    /// Custom font bytes (TTF/OTF). When `None`, the embedded JetBrains Mono
+    /// is used. Bold text uses the embedded JetBrains Mono Bold regardless.
+    /// The font must be monospace; non-monospace fonts will produce misaligned
+    /// output.
+    pub font_data: Option<Vec<u8>>,
 }
 
 impl Default for GifOptions {
@@ -99,6 +114,7 @@ impl Default for GifOptions {
             scale: 1,
             loop_count: 0,
             export: ExportOptions::default(),
+            font_data: None,
         }
     }
 }
@@ -151,7 +167,8 @@ pub fn export_gif(
             bold_brightens: options.export.bold_brightens,
         },
         options.scale,
-    );
+        options.font_data.as_deref(),
+    )?;
 
     let cell_w = renderer.cell_width;
     let cell_h = renderer.cell_height;
@@ -452,7 +469,8 @@ mod tests {
         let data = export_to_vec(&mut player, &opts).unwrap();
 
         // Naive upper bound: frames * (10*8) * (3*16) * 3 bytes
-        let renderer = ScreenRenderer::new(ExportOptions::default(), 1);
+        let renderer = ScreenRenderer::new(ExportOptions::default(), 1, None)
+            .expect("embedded font should parse");
         let frame_count = count_gif_frames(&data);
         let naive_upper =
             frame_count * (10 * renderer.cell_width * 3 * renderer.cell_height * 3) as usize;
