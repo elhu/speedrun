@@ -24,6 +24,10 @@ pub enum Action {
     JumpToEnd,
     ToggleControls,
     ToggleHelp,
+    StartSearch,
+    NextMatch,
+    PrevMatch,
+    Escape,
 }
 
 /// Map a crossterm key event to a player action.
@@ -34,8 +38,13 @@ pub fn map_key_event(key: KeyEvent) -> Option<Action> {
     match key.code {
         // Quit
         KeyCode::Char('q') => Some(Action::Quit),
-        KeyCode::Esc => Some(Action::Quit),
+        KeyCode::Esc => Some(Action::Escape),
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Action::Quit),
+
+        // Search
+        KeyCode::Char('/') => Some(Action::StartSearch),
+        KeyCode::Char('n') => Some(Action::NextMatch),
+        KeyCode::Char('N') => Some(Action::PrevMatch),
 
         // Playback toggle
         KeyCode::Char(' ') => Some(Action::TogglePlayback),
@@ -106,8 +115,8 @@ mod tests {
     }
 
     #[test]
-    fn esc_quits() {
-        assert_eq!(map_key_event(key(KeyCode::Esc)), Some(Action::Quit));
+    fn esc_maps_to_escape() {
+        assert_eq!(map_key_event(key(KeyCode::Esc)), Some(Action::Escape));
     }
 
     #[test]
@@ -281,6 +290,32 @@ mod tests {
         assert_eq!(
             map_key_event(key(KeyCode::Char('?'))),
             Some(Action::ToggleHelp)
+        );
+    }
+
+    // ── Search key mappings ─────────────────────────────────────────────────
+
+    #[test]
+    fn slash_maps_to_start_search() {
+        assert_eq!(
+            map_key_event(key(KeyCode::Char('/'))),
+            Some(Action::StartSearch)
+        );
+    }
+
+    #[test]
+    fn n_maps_to_next_match() {
+        assert_eq!(
+            map_key_event(key(KeyCode::Char('n'))),
+            Some(Action::NextMatch)
+        );
+    }
+
+    #[test]
+    fn shift_n_maps_to_prev_match() {
+        assert_eq!(
+            map_key_event(key(KeyCode::Char('N'))),
+            Some(Action::PrevMatch)
         );
     }
 
