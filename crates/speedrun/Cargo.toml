@@ -10,8 +10,13 @@ workspace = true
 name = "speedrun"
 path = "src/main.rs"
 
+[features]
+default = ["export"]
+export = ["dep:speedrun-export"]
+
 [dependencies]
 speedrun-core = { path = "../speedrun-core" }
+speedrun-export = { path = "../speedrun-export", optional = true }
 ratatui.workspace = true
 crossterm.workspace = true
 clap.workspace = true

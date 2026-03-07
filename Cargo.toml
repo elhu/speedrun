@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/speedrun-core",
+    "crates/speedrun-export",
     "crates/speedrun"
 ]
 resolver = "3"
