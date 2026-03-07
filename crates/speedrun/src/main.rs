@@ -73,10 +73,9 @@ enum ExportFormat {
         #[arg(short, long)]
         output: std::path::PathBuf,
 
-        /// Capture the terminal state at this effective time (seconds).
-        /// Cannot be used with --animated.
-        #[arg(long, default_value_t = 0.0, conflicts_with = "animated")]
-        at: f64,
+        /// Capture a static screenshot at this time (seconds) instead of producing an animated SVG.
+        #[arg(long)]
+        at: Option<f64>,
 
         /// Font size in pixels.
         #[arg(long, default_value_t = 14.0)]
@@ -85,10 +84,6 @@ enum ExportFormat {
         /// Overwrite output file if it already exists.
         #[arg(long)]
         force: bool,
-
-        /// Produce an animated SVG (CSS keyframes). Mutually exclusive with --at.
-        #[arg(long)]
-        animated: bool,
 
         /// Override the 120-second duration limit for animated SVG.
         #[arg(long)]
@@ -240,10 +235,9 @@ fn open_output(path: &std::path::Path, force: bool) -> std::fs::File {
 fn run_export_svg(
     file: std::path::PathBuf,
     output: std::path::PathBuf,
-    at: f64,
+    at: Option<f64>,
     font_size: f64,
     force: bool,
-    animated: bool,
     force_long: bool,
 ) {
     use speedrun_export::svg::{
@@ -263,7 +257,17 @@ fn run_export_svg(
 
     let mut out_file = open_output(&output, force);
 
-    if animated {
+    if let Some(t) = at {
+        let opts = SvgOptions {
+            at_time: t,
+            font_size,
+            ..Default::default()
+        };
+        export_svg(&mut player, &opts, &mut out_file).unwrap_or_else(|e| {
+            eprintln!("Export error: {e}");
+            std::process::exit(1);
+        });
+    } else {
         let opts = AnimatedSvgOptions {
             font_size,
             force_long,
@@ -277,16 +281,6 @@ fn run_export_svg(
                 }
                 _ => eprintln!("Export error: {e}"),
             }
-            std::process::exit(1);
-        });
-    } else {
-        let opts = SvgOptions {
-            at_time: at,
-            font_size,
-            ..Default::default()
-        };
-        export_svg(&mut player, &opts, &mut out_file).unwrap_or_else(|e| {
-            eprintln!("Export error: {e}");
             std::process::exit(1);
         });
     }
@@ -432,15 +426,14 @@ fn main() {
                 at,
                 font_size,
                 force,
-                animated,
                 force_long,
             } => {
                 #[cfg(feature = "export")]
-                run_export_svg(file, output, at, font_size, force, animated, force_long);
+                run_export_svg(file, output, at, font_size, force, force_long);
 
                 #[cfg(not(feature = "export"))]
                 {
-                    let _ = (file, output, at, font_size, force, animated, force_long);
+                    let _ = (file, output, at, font_size, force, force_long);
                     eprintln!("Export feature not enabled. Rebuild with --features export.");
                     std::process::exit(1);
                 }
@@ -569,5 +562,49 @@ mod tests {
             args.file.as_deref().map(|p| p.as_os_str()),
             Some(std::ffi::OsStr::new("-"))
         );
+    }
+
+    #[test]
+    fn test_export_svg_default_is_animated() {
+        let args = Args::try_parse_from(["speedrun", "export", "svg", "f.cast", "-o", "out.svg"])
+            .expect("should parse without --at");
+        match args.command {
+            Some(Command::Export {
+                format: ExportFormat::Svg { at, .. },
+            }) => {
+                assert_eq!(at, None, "default should be animated (at == None)");
+            }
+            _ => panic!("expected export svg subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_export_svg_at_selects_static() {
+        let args = Args::try_parse_from([
+            "speedrun", "export", "svg", "f.cast", "-o", "out.svg", "--at", "5.0",
+        ])
+        .expect("should parse with --at 5.0");
+        match args.command {
+            Some(Command::Export {
+                format: ExportFormat::Svg { at, .. },
+            }) => {
+                assert_eq!(at, Some(5.0), "--at 5.0 should set at to Some(5.0)");
+            }
+            _ => panic!("expected export svg subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_export_svg_animated_flag_removed() {
+        let result = Args::try_parse_from([
+            "speedrun",
+            "export",
+            "svg",
+            "f.cast",
+            "-o",
+            "out.svg",
+            "--animated",
+        ]);
+        assert!(result.is_err(), "--animated flag should no longer exist");
     }
 }
