@@ -65,6 +65,36 @@ impl ViewportState {
     }
 }
 
+/// Find all case-insensitive occurrences of `query` in the given screen lines.
+///
+/// Returns `(row, col, length)` tuples for each match, where `col` is in
+/// terminal columns (character index). This is extracted as a standalone
+/// function for testability.
+pub fn find_on_screen_matches(
+    lines: &[impl AsRef<str>],
+    query: &str,
+) -> Vec<(usize, usize, usize)> {
+    if query.is_empty() {
+        return vec![];
+    }
+    let query_lower = query.to_lowercase();
+    let query_len = query.len();
+    let mut matches = Vec::new();
+
+    for (row, line) in lines.iter().enumerate() {
+        let text = line.as_ref();
+        let text_lower = text.to_lowercase();
+        let mut start = 0;
+        while let Some(pos) = text_lower[start..].find(&query_lower) {
+            let col = start + pos;
+            matches.push((row, col, query_len));
+            start = col + 1; // advance by 1 to find overlapping matches
+        }
+    }
+
+    matches
+}
+
 /// Renders an avt terminal cell grid to a ratatui buffer.
 pub struct TerminalView<'a> {
     /// The terminal line grid from `player.screen()`.
@@ -77,6 +107,10 @@ pub struct TerminalView<'a> {
     scroll_x: u16,
     /// Vertical scroll offset.
     scroll_y: u16,
+    /// On-screen match positions as `(row, col, length)`.
+    matches: Vec<(usize, usize, usize)>,
+    /// Index of the "current" match (navigated to via n/N), if any.
+    current_match: Option<usize>,
 }
 
 impl<'a> TerminalView<'a> {
@@ -88,6 +122,8 @@ impl<'a> TerminalView<'a> {
             size,
             scroll_x: 0,
             scroll_y: 0,
+            matches: Vec::new(),
+            current_match: None,
         }
     }
 
@@ -95,6 +131,17 @@ impl<'a> TerminalView<'a> {
     pub fn with_scroll(mut self, scroll_x: u16, scroll_y: u16) -> Self {
         self.scroll_x = scroll_x;
         self.scroll_y = scroll_y;
+        self
+    }
+
+    /// Set the on-screen matches and optionally highlight a current match.
+    pub fn with_matches(
+        mut self,
+        matches: Vec<(usize, usize, usize)>,
+        current: Option<usize>,
+    ) -> Self {
+        self.matches = matches;
+        self.current_match = current;
         self
     }
 }
@@ -180,6 +227,38 @@ impl Widget for TerminalView<'_> {
             {
                 let cell = buf.get_mut(area.x + cx, area.y + cy);
                 cell.modifier |= Modifier::REVERSED;
+            }
+        }
+
+        // Render search match highlights
+        for (i, &(m_row, m_col, m_len)) in self.matches.iter().enumerate() {
+            let is_current = self.current_match == Some(i);
+            for offset in 0..m_len {
+                let src_col = (m_col + offset) as u16;
+                let src_row = m_row as u16;
+
+                // Check if this cell is within the visible viewport
+                let Some(dst_col) = src_col.checked_sub(self.scroll_x) else {
+                    continue;
+                };
+                let Some(dst_row) = src_row.checked_sub(self.scroll_y) else {
+                    continue;
+                };
+                if dst_col >= render_cols || dst_row >= render_rows {
+                    continue;
+                }
+
+                let cell = buf.get_mut(area.x + dst_col, area.y + dst_row);
+                if is_current {
+                    // Current match: yellow background, black foreground
+                    cell.set_bg(Color::Indexed(11));
+                    cell.set_fg(Color::Black);
+                    // Clear REVERSED if set (to avoid double-inversion)
+                    cell.modifier.remove(Modifier::REVERSED);
+                } else {
+                    // Other matches: REVERSED
+                    cell.modifier |= Modifier::REVERSED;
+                }
             }
         }
     }
@@ -323,6 +402,43 @@ mod tests {
         vp.follow_cursor(79, 49, 80, 50, 40, 24);
         assert!(vp.scroll_x <= 40);
         assert!(vp.scroll_y <= 26);
+    }
+
+    // ── Highlight position tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_highlight_positions_basic() {
+        let lines = vec!["hello world"];
+        let matches = find_on_screen_matches(&lines, "hello");
+        assert_eq!(matches, vec![(0, 0, 5)]);
+    }
+
+    #[test]
+    fn test_highlight_positions_multiple_per_line() {
+        let lines = vec!["abcabc"];
+        let matches = find_on_screen_matches(&lines, "abc");
+        assert_eq!(matches, vec![(0, 0, 3), (0, 3, 3)]);
+    }
+
+    #[test]
+    fn test_highlight_positions_multiple_lines() {
+        let lines = vec!["foo", "", "bar foo"];
+        let matches = find_on_screen_matches(&lines, "foo");
+        assert_eq!(matches, vec![(0, 0, 3), (2, 4, 3)]);
+    }
+
+    #[test]
+    fn test_highlight_positions_case_insensitive() {
+        let lines = vec!["Hello HELLO hElLo"];
+        let matches = find_on_screen_matches(&lines, "hello");
+        assert_eq!(matches, vec![(0, 0, 5), (0, 6, 5), (0, 12, 5)]);
+    }
+
+    #[test]
+    fn test_highlight_positions_no_match() {
+        let lines = vec!["hello world"];
+        let matches = find_on_screen_matches(&lines, "xyz");
+        assert!(matches.is_empty());
     }
 
     // ── End-to-end snapshot test ─────────────────────────────────────────────

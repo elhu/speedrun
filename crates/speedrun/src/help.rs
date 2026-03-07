@@ -38,6 +38,15 @@ const KEYBINDING_GROUPS: &[KeybindingGroup] = &[
         ],
     },
     KeybindingGroup {
+        title: "Search",
+        bindings: &[
+            ("/", "Search"),
+            ("n", "Next match"),
+            ("N", "Previous match"),
+            ("Esc", "Clear search"),
+        ],
+    },
+    KeybindingGroup {
         title: "Display",
         bindings: &[("Tab", "Toggle controls"), ("?", "Toggle help")],
     },
@@ -231,8 +240,8 @@ mod tests {
     #[test]
     fn overlay_dimensions() {
         let (w, h) = HelpOverlay::overlay_size();
-        // 4 groups + 13 bindings + 3 blank lines = 20 content lines + 2 border = 22
-        assert_eq!(h, 22);
+        // 5 groups + 17 bindings + 4 blank lines = 26 content lines + 2 border = 28
+        assert_eq!(h, 28);
         // Widest line: 2 + 12 + 2 + 19 = 35 content + 4 (border+padding) = 39
         assert_eq!(w, 39);
     }
@@ -247,21 +256,21 @@ mod tests {
     #[test]
     fn content_height_sums_correctly() {
         let h = HelpOverlay::content_height();
-        // 4 titles + 13 bindings + 3 blanks = 20
-        assert_eq!(h, 20);
+        // 5 titles + 17 bindings + 4 blanks = 26
+        assert_eq!(h, 26);
     }
 
     // ── Centering tests ──────────────────────────────────────────────────────
 
     #[test]
     fn centering_standard_terminal() {
-        let area = Rect::new(0, 0, 80, 24);
+        let area = Rect::new(0, 0, 80, 30);
         let rect = HelpOverlay::centered_rect(area);
         assert_eq!(rect.width, 39);
-        assert_eq!(rect.height, 22);
+        assert_eq!(rect.height, 28);
         // Horizontal: (80 - 39) / 2 = 20
         assert_eq!(rect.x, 20);
-        // Vertical: (24 - 22) / 2 = 1
+        // Vertical: (30 - 28) / 2 = 1
         assert_eq!(rect.y, 1);
     }
 
@@ -270,9 +279,9 @@ mod tests {
         let area = Rect::new(0, 0, 120, 40);
         let rect = HelpOverlay::centered_rect(area);
         assert_eq!(rect.width, 39);
-        assert_eq!(rect.height, 22);
+        assert_eq!(rect.height, 28);
         assert_eq!(rect.x, 40); // (120 - 39) / 2 = 40
-        assert_eq!(rect.y, 9); // (40 - 22) / 2 = 9
+        assert_eq!(rect.y, 6); // (40 - 28) / 2 = 6
     }
 
     #[test]
@@ -287,12 +296,12 @@ mod tests {
 
     #[test]
     fn centering_with_offset_area() {
-        let area = Rect::new(5, 3, 80, 24);
+        let area = Rect::new(5, 3, 80, 30);
         let rect = HelpOverlay::centered_rect(area);
         assert_eq!(rect.width, 39);
-        assert_eq!(rect.height, 22);
+        assert_eq!(rect.height, 28);
         assert_eq!(rect.x, 25); // 5 + (80 - 39) / 2
-        assert_eq!(rect.y, 4); // 3 + (24 - 22) / 2
+        assert_eq!(rect.y, 4); // 3 + (30 - 28) / 2
     }
 
     // ── Graceful degradation tests ───────────────────────────────────────────
@@ -344,5 +353,13 @@ mod tests {
         }
         HelpOverlay.render(area, &mut buf);
         assert_eq!(buf.get(0, 0).symbol(), "X");
+    }
+
+    // ── Search category test ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_help_overlay_search_category() {
+        let output = render_to_string(60, 30);
+        insta::assert_snapshot!(output);
     }
 }

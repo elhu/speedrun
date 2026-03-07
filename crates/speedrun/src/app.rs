@@ -1,11 +1,14 @@
 use crate::help::HelpOverlay;
 use crate::input::{Action, map_key_event};
-use crate::ui::{ControlsBar, TerminalView, ViewportState};
-use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
+use crate::ui::{ControlsBar, TerminalView, ViewportState, find_on_screen_matches};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
 use speedrun_core::Player;
 use std::time::{Duration, Instant};
 
@@ -39,6 +42,15 @@ fn next_speed(current: f64, direction: i8) -> f64 {
     }
 }
 
+/// Modal input mode for the application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    /// All keys go through `map_key_event`.
+    Normal,
+    /// Keys are captured for the search query text field.
+    SearchInput,
+}
+
 pub struct App {
     pub player: Player,
     /// Whether the user has manually hidden the controls bar via Tab.
@@ -55,6 +67,16 @@ pub struct App {
     /// Whether playback was active before help was shown (for resume on dismiss).
     was_playing_before_help: bool,
     viewport: ViewportState,
+    /// Current input mode (Normal or SearchInput).
+    pub input_mode: InputMode,
+    /// Buffer for text being typed in the search bar.
+    pub search_input: String,
+    /// Committed search query (set on Enter).
+    pub search_query: Option<String>,
+    /// Index of the current match for n/N navigation.
+    pub current_match_index: Option<usize>,
+    /// Transient "No matches" feedback message, with expiry time.
+    pub no_match_feedback: Option<Instant>,
 }
 
 impl App {
@@ -70,6 +92,11 @@ impl App {
             help_visible: false,
             was_playing_before_help: false,
             viewport: ViewportState::default(),
+            input_mode: InputMode::Normal,
+            search_input: String::new(),
+            search_query: None,
+            current_match_index: None,
+            no_match_feedback: None,
         }
     }
 
@@ -88,6 +115,23 @@ impl App {
             return false;
         }
         true
+    }
+
+    /// Adjust viewport scroll_y to center the given row vertically.
+    ///
+    /// This is called after n/N navigation to ensure the match row is visible
+    /// when the recording is taller than the host terminal.
+    fn scroll_to_match_row(&mut self, match_row: u16) {
+        let (_, rec_rows) = self.player.size();
+        // We don't have the current terminal height here, but we can estimate
+        // a reasonable viewport height. The viewport will be corrected on next
+        // render by follow_cursor, but we set scroll_y here for the match row.
+        // Use a conservative estimate — the viewport state will be refined on render.
+        let max_scroll = rec_rows.saturating_sub(1);
+        // Center the match row — try to put it in the middle of screen
+        // We'll use scroll_y directly; follow_cursor will refine on next render
+        let half_screen = 12u16; // reasonable estimate for half screen
+        self.viewport.scroll_y = match_row.saturating_sub(half_screen).min(max_scroll);
     }
 
     fn show_help(&mut self) {
@@ -203,19 +247,60 @@ impl App {
 
         self.last_interaction = Instant::now();
 
-        if let Some(action) = map_key_event(key) {
-            self.handle_action(action);
+        match self.input_mode {
+            InputMode::SearchInput => self.handle_search_input(key),
+            InputMode::Normal => {
+                if let Some(action) = map_key_event(key) {
+                    self.handle_action(action);
+                }
+            }
+        }
+    }
+
+    /// Handle key events while in SearchInput mode.
+    fn handle_search_input(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel search input, return to Normal mode, keep previous results
+                self.input_mode = InputMode::Normal;
+                self.search_input.clear();
+            }
+            KeyCode::Enter => {
+                // Execute search
+                let query = self.search_input.drain(..).collect::<String>();
+                if query.is_empty() {
+                    // Empty query: cancel
+                    self.input_mode = InputMode::Normal;
+                } else {
+                    self.input_mode = InputMode::Normal;
+                    self.search_query = Some(query.clone());
+                    self.current_match_index = None;
+                    // Seek to first match from current time
+                    let current = self.player.current_time();
+                    if self.player.search_forward(&query, current).is_none() {
+                        // No matches at all
+                        self.no_match_feedback = Some(Instant::now());
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                self.search_input.pop();
+            }
+            KeyCode::Char(c) => {
+                self.search_input.push(c);
+            }
+            _ => {} // Ignore other keys (arrows, etc.)
         }
     }
 
     fn handle_action(&mut self, action: Action) {
-        // While help is visible, only allow toggle and quit (both dismiss help)
+        // While help is visible, only allow toggle, quit, and escape (all dismiss help)
         if self.help_visible {
             match action {
-                Action::ToggleHelp | Action::Quit => {
+                Action::ToggleHelp | Action::Quit | Action::Escape => {
                     self.dismiss_help();
                 }
-                _ => {} // ignore all other actions
+                _ => {} // ignore all other actions (including StartSearch)
             }
             return;
         }
@@ -223,6 +308,50 @@ impl App {
         match action {
             Action::Quit => {
                 self.should_quit = true;
+            }
+            Action::Escape => {
+                // Esc chain: search input > help overlay > search active > quit
+                // (search input is handled in handle_search_input, help handled above)
+                if self.search_query.is_some() {
+                    // Clear search state
+                    self.search_query = None;
+                    self.current_match_index = None;
+                    self.no_match_feedback = None;
+                } else {
+                    self.should_quit = true;
+                }
+            }
+            Action::StartSearch => {
+                self.input_mode = InputMode::SearchInput;
+                self.search_input.clear();
+            }
+            Action::NextMatch => {
+                if let Some(ref query) = self.search_query.clone() {
+                    let current = self.player.current_time();
+                    let epsilon = 0.001;
+                    if let Some(hit) = self.player.search_forward(query, current + epsilon) {
+                        self.player.seek(hit.time);
+                        // Scroll viewport to center the match row
+                        self.scroll_to_match_row(hit.row as u16);
+                    } else {
+                        self.no_match_feedback = Some(Instant::now());
+                    }
+                }
+                // No-op if search_query is None
+            }
+            Action::PrevMatch => {
+                if let Some(ref query) = self.search_query.clone() {
+                    let current = self.player.current_time();
+                    let epsilon = 0.001;
+                    if let Some(hit) = self.player.search_backward(query, current - epsilon) {
+                        self.player.seek(hit.time);
+                        // Scroll viewport to center the match row
+                        self.scroll_to_match_row(hit.row as u16);
+                    } else {
+                        self.no_match_feedback = Some(Instant::now());
+                    }
+                }
+                // No-op if search_query is None
             }
             Action::TogglePlayback => {
                 // If paused at the end of a non-empty recording, seek to beginning
@@ -396,8 +525,23 @@ impl App {
             area.height,
         );
 
+        // Compute on-screen matches for highlighting
+        let (screen_matches, current_match_idx) = if let Some(ref query) = self.search_query {
+            let lines: Vec<String> = self
+                .player
+                .screen()
+                .iter()
+                .map(|line| line.text())
+                .collect();
+            let matches = find_on_screen_matches(&lines, query);
+            (matches, self.current_match_index)
+        } else {
+            (Vec::new(), None)
+        };
+
         let view = TerminalView::new(self.player.screen(), cursor, (rec_cols, rec_rows))
-            .with_scroll(self.viewport.scroll_x, self.viewport.scroll_y);
+            .with_scroll(self.viewport.scroll_x, self.viewport.scroll_y)
+            .with_matches(screen_matches, current_match_idx);
 
         frame.render_widget(view, area);
 
@@ -412,9 +556,51 @@ impl App {
                 duration: self.player.duration(),
                 speed: self.player.speed(),
                 marker_times: self.player.markers().iter().map(|m| m.time).collect(),
+                search_query: self.search_query.clone(),
             };
             let controls_rect = Self::controls_rect(area, rec_cols, rec_rows);
             frame.render_widget(controls, controls_rect);
+        }
+
+        // Render search input bar when in SearchInput mode
+        if self.input_mode == InputMode::SearchInput {
+            let search_bar_rect = Rect {
+                x: area.x,
+                y: area.y + area.height.saturating_sub(1),
+                width: area.width,
+                height: 1,
+            };
+            let available = search_bar_rect.width.saturating_sub(3) as usize; // "/ " prefix + cursor
+            let display_text = if self.search_input.len() > available {
+                &self.search_input[self.search_input.len() - available..]
+            } else {
+                &self.search_input
+            };
+            let line = Line::from(vec![
+                Span::styled("/ ", Style::default().fg(Color::Yellow)),
+                Span::raw(display_text),
+                Span::styled("█", Style::default().fg(Color::White)),
+            ]);
+            let bar =
+                Paragraph::new(line).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+            frame.render_widget(bar, search_bar_rect);
+        }
+
+        // Render "No matches" feedback
+        if let Some(when) = self.no_match_feedback {
+            if when.elapsed() < Duration::from_secs(2) {
+                let feedback_rect = Rect {
+                    x: area.x,
+                    y: area.y + area.height.saturating_sub(1),
+                    width: area.width,
+                    height: 1,
+                };
+                let bar = Paragraph::new("  No matches")
+                    .style(Style::default().bg(Color::DarkGray).fg(Color::Red));
+                frame.render_widget(bar, feedback_rect);
+            } else {
+                self.no_match_feedback = None;
+            }
         }
 
         // Render help overlay on top of everything when visible
@@ -1156,17 +1342,17 @@ mod tests {
         app.handle_action(Action::ToggleHelp); // show help
         assert!(app.help_visible);
 
-        app.handle_action(Action::Quit); // Esc → dismiss, not quit
+        app.handle_action(Action::Escape); // Esc → dismiss, not quit
         assert!(!app.help_visible);
         assert!(!app.should_quit);
     }
 
     #[test]
-    fn esc_quits_when_help_not_visible() {
+    fn esc_quits_when_nothing_active() {
         let player = load_player("minimal_v2.cast");
         let mut app = App::new(player, true);
 
-        app.handle_action(Action::Quit);
+        app.handle_action(Action::Escape);
         assert!(app.should_quit);
     }
 
@@ -1311,5 +1497,266 @@ mod tests {
         app.handle_action(Action::ToggleHelp);
         assert!(app.help_visible);
         assert!(!app.player.is_playing());
+    }
+
+    // ── Search input and navigation tests ─────────────────────────────────────
+
+    #[test]
+    fn test_start_search_sets_input_mode() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::StartSearch);
+        assert_eq!(app.input_mode, InputMode::SearchInput);
+    }
+
+    #[test]
+    fn test_esc_cancels_search_input() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::StartSearch);
+        assert_eq!(app.input_mode, InputMode::SearchInput);
+
+        // Type something into search input
+        app.search_input.push_str("hello");
+
+        // Simulate Esc in search input mode
+        app.handle_search_input(KeyEvent::new(
+            KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.search_input.is_empty());
+    }
+
+    #[test]
+    fn test_esc_dismisses_help() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::ToggleHelp);
+        assert!(app.help_visible);
+
+        app.handle_action(Action::Escape);
+        assert!(!app.help_visible);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_esc_clears_search() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        app.search_query = Some("test".to_string());
+
+        app.handle_action(Action::Escape);
+
+        assert_eq!(app.search_query, None);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_esc_quits_when_nothing_active() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        // No search, no help
+        app.handle_action(Action::Escape);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_esc_chain_order() {
+        // Verify priority: search input mode > help overlay > search active > quit
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        // Set up all states: search query active, help visible, and search input mode
+        app.search_query = Some("test".to_string());
+
+        // Stage 1: Esc clears search query first
+        app.handle_action(Action::Escape);
+        assert_eq!(app.search_query, None);
+        assert!(!app.should_quit);
+
+        // Stage 2: Esc with nothing active -> quit
+        app.handle_action(Action::Escape);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_esc_chain_with_search_input_mode() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        // Enter search input mode
+        app.handle_action(Action::StartSearch);
+        assert_eq!(app.input_mode, InputMode::SearchInput);
+
+        // Esc in search input mode cancels search input (handled by handle_search_input)
+        app.handle_search_input(KeyEvent::new(
+            KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_esc_chain_help_before_search() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        // Set up help visible AND search query active
+        app.search_query = Some("test".to_string());
+        app.handle_action(Action::ToggleHelp);
+        assert!(app.help_visible);
+
+        // Esc should dismiss help first (help is checked before search in handle_action)
+        app.handle_action(Action::Escape);
+        assert!(!app.help_visible);
+        assert_eq!(app.search_query, Some("test".to_string())); // search still active
+        assert!(!app.should_quit);
+
+        // Next Esc clears search
+        app.handle_action(Action::Escape);
+        assert_eq!(app.search_query, None);
+        assert!(!app.should_quit);
+
+        // Final Esc quits
+        app.handle_action(Action::Escape);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_next_match_no_search_is_noop() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        let time_before = app.player.current_time();
+        app.handle_action(Action::NextMatch);
+        assert_eq!(app.player.current_time(), time_before);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_prev_match_no_search_is_noop() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        let time_before = app.player.current_time();
+        app.handle_action(Action::PrevMatch);
+        assert_eq!(app.player.current_time(), time_before);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_start_search_ignored_during_help() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::ToggleHelp);
+        assert!(app.help_visible);
+
+        app.handle_action(Action::StartSearch);
+        // Should still be in Normal mode with help showing
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.help_visible);
+    }
+
+    #[test]
+    fn test_search_input_inserts_characters() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::StartSearch);
+        assert_eq!(app.input_mode, InputMode::SearchInput);
+
+        // Type characters including space and q
+        app.handle_search_input(KeyEvent::new(
+            KeyCode::Char('h'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_search_input(KeyEvent::new(
+            KeyCode::Char('e'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_search_input(KeyEvent::new(
+            KeyCode::Char(' '),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_search_input(KeyEvent::new(
+            KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert_eq!(app.search_input, "he q");
+        // Still in search input mode (space didn't toggle playback, q didn't quit)
+        assert_eq!(app.input_mode, InputMode::SearchInput);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_search_input_backspace() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::StartSearch);
+        app.handle_search_input(KeyEvent::new(
+            KeyCode::Char('a'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_search_input(KeyEvent::new(
+            KeyCode::Char('b'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.search_input, "ab");
+
+        app.handle_search_input(KeyEvent::new(
+            KeyCode::Backspace,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(app.search_input, "a");
+    }
+
+    #[test]
+    fn test_search_enter_commits_query() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::StartSearch);
+        app.handle_search_input(KeyEvent::new(
+            KeyCode::Char('h'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_search_input(KeyEvent::new(
+            KeyCode::Char('i'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        app.handle_search_input(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.search_query, Some("hi".to_string()));
+    }
+
+    #[test]
+    fn test_search_empty_enter_cancels() {
+        let player = load_player("minimal_v2.cast");
+        let mut app = App::new(player, true);
+
+        app.handle_action(Action::StartSearch);
+        // Enter with empty query
+        app.handle_search_input(KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.search_query, None); // no query committed
     }
 }

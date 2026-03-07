@@ -410,6 +410,42 @@ impl Player {
     }
 
     // -----------------------------------------------------------------------
+    // Search
+    // -----------------------------------------------------------------------
+
+    /// Find the next occurrence of `query` after `from_time`.
+    /// Wraps around to the beginning if no match is found before the end.
+    /// Returns `None` if the query is not found anywhere in the recording.
+    ///
+    /// Takes `&self` — search uses throwaway `Vt` instances and does not
+    /// modify the player's current state.
+    pub fn search_forward(&self, query: &str, from_time: f64) -> Option<crate::search::SearchHit> {
+        crate::search::search_forward(
+            &self.recording,
+            &self.time_map,
+            &self.index,
+            query,
+            from_time,
+        )
+    }
+
+    /// Find the previous occurrence of `query` before `from_time`.
+    /// Wraps around to the end if no match is found before the start.
+    /// Returns `None` if the query is not found anywhere in the recording.
+    ///
+    /// Takes `&self` — search uses throwaway `Vt` instances and does not
+    /// modify the player's current state.
+    pub fn search_backward(&self, query: &str, from_time: f64) -> Option<crate::search::SearchHit> {
+        crate::search::search_backward(
+            &self.recording,
+            &self.time_map,
+            &self.index,
+            query,
+            from_time,
+        )
+    }
+
+    // -----------------------------------------------------------------------
     // Single-event stepping
     // -----------------------------------------------------------------------
 

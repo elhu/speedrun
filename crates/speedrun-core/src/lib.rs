@@ -3,6 +3,7 @@
 pub mod index;
 pub mod parser;
 pub mod player;
+pub mod search;
 pub mod snapshot;
 pub mod timemap;
 
@@ -11,5 +12,6 @@ pub use parser::{
     Event, EventData, EventType, Header, Marker, ParseError, ParseWarning, Recording, parse,
 };
 pub use player::{LoadOptions, Player, PlayerError};
+pub use search::SearchHit;
 pub use snapshot::{CursorState, TerminalSnapshot, create_vt};
 pub use timemap::{TimeMap, TimeMapError};
