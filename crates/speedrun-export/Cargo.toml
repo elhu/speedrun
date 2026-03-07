@@ -10,6 +10,8 @@ workspace = true
 speedrun-core = { path = "../speedrun-core" }
 avt.workspace = true
 rgb.workspace = true
+fontdue = "0.9"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 insta.workspace = true
