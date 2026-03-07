@@ -1150,6 +1150,7 @@ dependencies = [
  "insta",
  "rgb",
  "speedrun-core",
+ "tempfile",
 ]
 
 [[package]]
