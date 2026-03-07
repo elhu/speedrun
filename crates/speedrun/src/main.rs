@@ -119,6 +119,31 @@ enum ExportFormat {
         #[arg(long)]
         force: bool,
     },
+    /// Export a recording as an MP4 video (requires ffmpeg).
+    Mp4 {
+        /// Path to the asciicast recording file.
+        file: std::path::PathBuf,
+
+        /// Output MP4 file path (required).
+        #[arg(short, long)]
+        output: std::path::PathBuf,
+
+        /// Frames per second.
+        #[arg(long, default_value_t = 30)]
+        fps: u32,
+
+        /// Scale factor for pixel dimensions.
+        #[arg(long, default_value_t = 1)]
+        scale: u32,
+
+        /// Constant Rate Factor, 0–51 (lower = better quality).
+        #[arg(long, default_value_t = 23)]
+        crf: u8,
+
+        /// Overwrite output file if it already exists.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +337,61 @@ fn run_export_gif(
     eprintln!("Wrote {}", output.display());
 }
 
+#[cfg(feature = "export")]
+fn run_export_mp4(
+    file: std::path::PathBuf,
+    output: std::path::PathBuf,
+    fps: u32,
+    scale: u32,
+    crf: u8,
+    force: bool,
+) {
+    use speedrun_export::mp4::{Mp4Options, export_mp4};
+
+    let mut player = load_player(
+        &file,
+        speedrun_core::LoadOptions {
+            idle_limit: None,
+            keyframe_interval: 5.0,
+        },
+    );
+    for warning in player.warnings() {
+        eprintln!("warning: line {}: {}", warning.line_number, warning.message);
+    }
+
+    if output.exists() && !force {
+        eprintln!(
+            "Output file already exists: {}. Use --force to overwrite.",
+            output.display()
+        );
+        std::process::exit(1);
+    }
+
+    let opts = Mp4Options {
+        fps,
+        scale,
+        crf,
+        ..Default::default()
+    };
+
+    export_mp4(
+        &mut player,
+        &opts,
+        &output,
+        Some(&|current, total| {
+            if current % 100 == 0 || current == total {
+                eprintln!("Rendering frame {current}/{total}...");
+            }
+        }),
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("Export error: {e}");
+        std::process::exit(1);
+    });
+
+    eprintln!("Wrote {}", output.display());
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -357,6 +437,24 @@ fn main() {
                 #[cfg(not(feature = "export"))]
                 {
                     let _ = (file, output, fps, scale, loop_count, force);
+                    eprintln!("Export feature not enabled. Rebuild with --features export.");
+                    std::process::exit(1);
+                }
+            }
+            ExportFormat::Mp4 {
+                file,
+                output,
+                fps,
+                scale,
+                crf,
+                force,
+            } => {
+                #[cfg(feature = "export")]
+                run_export_mp4(file, output, fps, scale, crf, force);
+
+                #[cfg(not(feature = "export"))]
+                {
+                    let _ = (file, output, fps, scale, crf, force);
                     eprintln!("Export feature not enabled. Rebuild with --features export.");
                     std::process::exit(1);
                 }
