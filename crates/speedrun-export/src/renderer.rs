@@ -5,12 +5,13 @@
 //!
 //! # Font
 //!
-//! JetBrains Mono Regular is embedded at compile time from
-//! `fonts/JetBrainsMono-Regular.ttf`. The font covers ASCII, Latin-1,
-//! Box Drawing (U+2500–U+257F), Block Elements (U+2580–U+259F), and many
-//! other ranges. Characters outside the font's coverage are rendered as
-//! U+25A1 (WHITE SQUARE); if that glyph is also missing, a filled foreground
-//! rectangle is drawn instead.
+//! JetBrains Mono Regular and Bold are embedded at compile time from
+//! `fonts/JetBrainsMono-Regular.ttf` and `fonts/JetBrainsMono-Bold.ttf`.
+//! The fonts cover ASCII, Latin-1, Box Drawing (U+2500–U+257F), Block
+//! Elements (U+2580–U+259F), and many other ranges. Characters outside the
+//! font's coverage are rendered as U+25A1 (WHITE SQUARE); if that glyph is
+//! also missing, a filled foreground rectangle is drawn instead.
+//! Bold segments (SGR 1) use JetBrains Mono Bold for rasterization.
 //!
 //! # Cell geometry
 //!
@@ -34,6 +35,10 @@ use crate::palette::{ExportOptions, Palette};
 /// Licensed under the SIL Open Font License 1.1 (see fonts/OFL.txt).
 const FONT_BYTES: &[u8] = include_bytes!("../fonts/JetBrainsMono-Regular.ttf");
 
+/// JetBrains Mono Bold — embedded at compile time.
+/// Licensed under the SIL Open Font License 1.1 (see fonts/OFL.txt).
+const BOLD_FONT_BYTES: &[u8] = include_bytes!("../fonts/JetBrainsMono-Bold.ttf");
+
 // Fallback glyph: U+25A1 WHITE SQUARE
 const FALLBACK_CHAR: char = '\u{25A1}';
 
@@ -47,6 +52,7 @@ const BASE_FONT_SIZE_PX: f32 = 16.0;
 /// Renders terminal screen content to an RGBA pixel buffer.
 pub struct ScreenRenderer {
     font: fontdue::Font,
+    bold_font: fontdue::Font,
     /// Pixel width of a single terminal cell column.
     pub cell_width: u32,
     /// Pixel height of a single terminal cell row.
@@ -67,6 +73,10 @@ impl ScreenRenderer {
     pub fn new(export_opts: ExportOptions, scale: u32) -> Self {
         let font = fontdue::Font::from_bytes(FONT_BYTES, fontdue::FontSettings::default())
             .expect("embedded JetBrains Mono TTF should always parse successfully");
+
+        let bold_font =
+            fontdue::Font::from_bytes(BOLD_FONT_BYTES, fontdue::FontSettings::default())
+                .expect("embedded JetBrains Mono Bold TTF should always parse successfully");
 
         let scale = scale.max(1);
         let base_font_size = BASE_FONT_SIZE_PX * scale as f32;
@@ -96,6 +106,17 @@ impl ScreenRenderer {
             .expect("JetBrains Mono should have horizontal line metrics");
         let ascent = line_metrics.ascent;
 
+        // Validate that bold font has identical advance widths to regular font.
+        // JetBrains Mono Bold is a monospace font and must match Regular's metrics;
+        // this assertion catches accidental use of a non-matching bold font.
+        debug_assert!(
+            (bold_font.metrics('M', BASE_FONT_SIZE_PX).advance_width
+                - font.metrics('M', BASE_FONT_SIZE_PX).advance_width)
+                .abs()
+                < 0.5,
+            "Bold font advance width must match Regular font advance width for correct cell layout"
+        );
+
         let palette = Palette::new(ExportOptions {
             default_fg: export_opts.default_fg,
             default_bg: export_opts.default_bg,
@@ -104,6 +125,7 @@ impl ScreenRenderer {
 
         Self {
             font,
+            bold_font,
             cell_width,
             cell_height,
             base_font_size,
@@ -145,6 +167,13 @@ impl ScreenRenderer {
                 let char_w = seg.char_width();
                 let text = seg.text();
 
+                // Select font based on bold attribute
+                let font = if seg.is_bold() {
+                    &self.bold_font
+                } else {
+                    &self.font
+                };
+
                 for ch in text.chars() {
                     if col_offset >= width as usize {
                         break;
@@ -181,6 +210,7 @@ impl ScreenRenderer {
                             cell_pixel_h,
                             font_size,
                             fg_rgba,
+                            font,
                         );
                     }
 
@@ -255,12 +285,13 @@ impl ScreenRenderer {
         cell_h: u32,
         font_size: f32,
         fg: Rgba<u8>,
+        font: &fontdue::Font,
     ) {
         let img_w = img.width();
         let img_h = img.height();
 
         // Try the character; fall back to FALLBACK_CHAR; if still missing, draw rect
-        let (metrics, bitmap) = self.rasterize_with_fallback(ch, font_size);
+        let (metrics, bitmap) = self.rasterize_with_fallback(ch, font_size, font);
 
         if bitmap.is_empty() || metrics.width == 0 || metrics.height == 0 {
             // Draw a filled foreground rectangle as last resort
@@ -326,15 +357,20 @@ impl ScreenRenderer {
     }
 
     /// Rasterize a character, falling back to FALLBACK_CHAR if needed.
-    fn rasterize_with_fallback(&self, ch: char, font_size: f32) -> (fontdue::Metrics, Vec<u8>) {
-        let (metrics, bitmap) = self.font.rasterize(ch, font_size);
+    fn rasterize_with_fallback(
+        &self,
+        ch: char,
+        font_size: f32,
+        font: &fontdue::Font,
+    ) -> (fontdue::Metrics, Vec<u8>) {
+        let (metrics, bitmap) = font.rasterize(ch, font_size);
         if metrics.width > 0 && metrics.height > 0 && !bitmap.is_empty() {
             return (metrics, bitmap);
         }
 
         // Try fallback glyph
         if ch != FALLBACK_CHAR {
-            let (fm, fb) = self.font.rasterize(FALLBACK_CHAR, font_size);
+            let (fm, fb) = font.rasterize(FALLBACK_CHAR, font_size);
             if fm.width > 0 && fm.height > 0 && !fb.is_empty() {
                 return (fm, fb);
             }
@@ -663,6 +699,75 @@ mod tests {
             r2.cell_height,
             r1.cell_height * 2,
             "scale=2 cell_height should be 2× scale=1"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 13. Bold text renders differently from regular text (uses bold font)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_bold_text_pixels_differ_from_regular() {
+        let renderer = default_renderer(1);
+        let (w, h) = (80u16, 24u16);
+        let cursor = default_cursor();
+
+        // \x1b[1m = bold SGR; \x1b[0m = reset
+        let vt_bold = make_test_screen("\x1b[1mA", w, h);
+        let vt_regular = make_test_screen("A", w, h);
+
+        let img_bold = renderer.render_frame(vt_bold.view(), &cursor, w, h);
+        let img_regular = renderer.render_frame(vt_regular.view(), &cursor, w, h);
+
+        let pixels_bold =
+            sample_cell_pixels(&img_bold, 0, 0, renderer.cell_width, renderer.cell_height);
+        let pixels_regular = sample_cell_pixels(
+            &img_regular,
+            0,
+            0,
+            renderer.cell_width,
+            renderer.cell_height,
+        );
+
+        assert_ne!(
+            pixels_bold, pixels_regular,
+            "Bold 'A' should render differently from regular 'A' (different font weights)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 14. Bold text renders without panic and with correct image dimensions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_bold_text_no_panic_and_correct_dimensions() {
+        let renderer = default_renderer(1);
+        let (w, h) = (80u16, 24u16);
+        let cursor = default_cursor();
+
+        // Render bold text — should not panic
+        let vt = make_test_screen("\x1b[1mHello World", w, h);
+        let img = renderer.render_frame(vt.view(), &cursor, w, h);
+
+        // Image dimensions must be correct
+        assert_eq!(
+            img.width(),
+            w as u32 * renderer.cell_width,
+            "Bold text render must produce image with correct width"
+        );
+        assert_eq!(
+            img.height(),
+            h as u32 * renderer.cell_height,
+            "Bold text render must produce image with correct height"
+        );
+
+        // Bold text should produce non-background pixels
+        let bg = ExportOptions::default().default_bg;
+        let bg_pixel = Rgba([bg.r, bg.g, bg.b, 255]);
+        let has_non_bg = img.pixels().any(|p| p != &bg_pixel);
+        assert!(
+            has_non_bg,
+            "Bold 'Hello World' should produce non-background pixels"
         );
     }
 }
