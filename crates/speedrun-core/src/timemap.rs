@@ -12,6 +12,7 @@ use std::fmt;
 #[derive(Debug)]
 pub struct TimeMap {
     effective_times: Vec<f64>,
+    raw_times: Vec<f64>,
     duration: f64,
 }
 
@@ -64,6 +65,7 @@ impl TimeMap {
         if raw_times.is_empty() {
             return Ok(TimeMap {
                 effective_times: vec![],
+                raw_times: vec![],
                 duration: 0.0,
             });
         }
@@ -84,6 +86,7 @@ impl TimeMap {
 
         Ok(TimeMap {
             effective_times,
+            raw_times: raw_times.to_vec(),
             duration,
         })
     }
@@ -117,6 +120,25 @@ impl TimeMap {
 
         let count = self.effective_times.partition_point(|&t| t <= time);
         if count == 0 { None } else { Some(count - 1) }
+    }
+
+    /// Convert an effective time back to a raw time using the "uncapped delta" strategy.
+    ///
+    /// Returns `None` if the effective time is before the first event or the map is empty.
+    /// For effective times at or past the last event, returns the last raw time plus any delta.
+    pub fn raw_time(&self, effective: f64) -> Option<f64> {
+        if self.effective_times.is_empty() {
+            return None;
+        }
+        // Binary search for the last event at or before `effective`
+        let count = self.effective_times.partition_point(|&t| t <= effective);
+        if count == 0 {
+            return None; // before first event
+        }
+        let idx = count - 1;
+        // Uncapped delta: raw = prev_raw + (effective - prev_eff)
+        let delta = effective - self.effective_times[idx];
+        Some(self.raw_times[idx] + delta)
     }
 }
 
@@ -260,5 +282,101 @@ mod tests {
             .map(|i| tm.effective_time(i).unwrap())
             .collect();
         insta::assert_debug_snapshot!(times);
+    }
+
+    // Test 9: raw_time — empty map returns None
+    #[test]
+    fn raw_time_empty_map() {
+        let tm = TimeMap::build(&[], Some(2.0)).unwrap();
+        assert_eq!(tm.raw_time(0.0), None);
+        assert_eq!(tm.raw_time(1.0), None);
+    }
+
+    // Test 10: raw_time — before first event returns None
+    #[test]
+    fn raw_time_before_first_event() {
+        let tm = TimeMap::build(&[1.0, 2.0, 3.0], None).unwrap();
+        assert_eq!(tm.raw_time(0.5), None);
+        assert_eq!(tm.raw_time(0.9999), None);
+    }
+
+    // Test 11: raw_time — no-limit round-trip (raw == effective for all event times)
+    #[test]
+    fn raw_time_no_limit_round_trip() {
+        let raw = &[0.0, 1.0, 5.0, 10.0];
+        let tm = TimeMap::build(raw, None).unwrap();
+        for (i, &r) in raw.iter().enumerate() {
+            let eff = tm.effective_time(i).unwrap();
+            let recovered = tm.raw_time(eff).unwrap();
+            assert_f64_eq(recovered, r);
+        }
+    }
+
+    // Test 12: raw_time — idle-limited round-trip (every event's effective → original raw)
+    #[test]
+    fn raw_time_idle_limited_round_trip() {
+        let raw = &[0.0, 1.0, 100.0, 101.0];
+        let tm = TimeMap::build(raw, Some(2.0)).unwrap();
+        // effective_times: [0.0, 1.0, 3.0, 4.0]
+        for (i, &r) in raw.iter().enumerate() {
+            let eff = tm.effective_time(i).unwrap();
+            let recovered = tm.raw_time(eff).unwrap();
+            assert_f64_eq(recovered, r);
+        }
+    }
+
+    // Test 13: raw_time — uncapped delta in gap (NOT linear interpolation)
+    #[test]
+    fn raw_time_uncapped_delta_in_gap() {
+        // Raw: [0.0, 1.0, 100.0], idle_limit=2.0
+        // Effective: [0.0, 1.0, 3.0]
+        // At effective=2.0: prev event is idx=1 (eff=1.0, raw=1.0)
+        // uncapped delta: raw = 1.0 + (2.0 - 1.0) = 2.0
+        let raw = &[0.0, 1.0, 100.0];
+        let tm = TimeMap::build(raw, Some(2.0)).unwrap();
+        let result = tm.raw_time(2.0).unwrap();
+        assert_f64_eq(result, 2.0);
+
+        // Linear interpolation would give: 1.0 + (2.0-1.0)/(3.0-1.0) * (100.0-1.0) = 50.5
+        // Verify we are NOT doing linear interpolation
+        assert!(
+            (result - 50.5).abs() > 1.0,
+            "should not be linear interpolation"
+        );
+    }
+
+    // Test 14: raw_time — at last event returns exact raw time
+    #[test]
+    fn raw_time_at_last_event() {
+        let raw = &[0.0, 1.0, 100.0];
+        let tm = TimeMap::build(raw, Some(2.0)).unwrap();
+        // effective_times: [0.0, 1.0, 3.0]
+        let last_eff = tm.effective_time(2).unwrap();
+        let result = tm.raw_time(last_eff).unwrap();
+        assert_f64_eq(result, 100.0);
+    }
+
+    // Test 15: raw_time — past last event returns last_raw + delta
+    #[test]
+    fn raw_time_past_last_event() {
+        let raw = &[0.0, 1.0, 100.0];
+        let tm = TimeMap::build(raw, Some(2.0)).unwrap();
+        // effective_times: [0.0, 1.0, 3.0]
+        // At effective=5.0: idx=2 (eff=3.0, raw=100.0), delta=2.0
+        // raw = 100.0 + 2.0 = 102.0
+        let result = tm.raw_time(5.0).unwrap();
+        assert_f64_eq(result, 102.0);
+    }
+
+    // Test 16: raw_time — at exact event boundaries (delta==0)
+    #[test]
+    fn raw_time_at_exact_event_boundaries() {
+        let raw = &[0.0, 1.0, 30.0, 31.0];
+        let tm = TimeMap::build(raw, Some(2.0)).unwrap();
+        // effective_times: [0.0, 1.0, 3.0, 4.0]
+        assert_f64_eq(tm.raw_time(0.0).unwrap(), 0.0);
+        assert_f64_eq(tm.raw_time(1.0).unwrap(), 1.0);
+        assert_f64_eq(tm.raw_time(3.0).unwrap(), 30.0);
+        assert_f64_eq(tm.raw_time(4.0).unwrap(), 31.0);
     }
 }
