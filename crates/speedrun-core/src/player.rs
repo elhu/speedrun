@@ -8,7 +8,9 @@ use std::fmt;
 use std::io::Read;
 
 use crate::index::{KEYFRAME_INTERVAL, KeyframeIndex};
-use crate::parser::{EventData, EventType, Marker, ParseError, ParseWarning, Recording};
+use crate::parser::{
+    EventData, EventType, Marker, ParseError, ParseWarning, Recording, feed_event,
+};
 use crate::snapshot::{CursorState, create_vt};
 use crate::timemap::{TimeMap, TimeMapError};
 
@@ -23,6 +25,8 @@ pub enum PlayerError {
     Parse(ParseError),
     /// The time map could not be built (e.g. invalid idle limit).
     TimeMap(TimeMapError),
+    /// The keyframe index could not be built.
+    Index(String),
 }
 
 impl fmt::Display for PlayerError {
@@ -30,6 +34,7 @@ impl fmt::Display for PlayerError {
         match self {
             PlayerError::Parse(e) => write!(f, "parse error: {e}"),
             PlayerError::TimeMap(e) => write!(f, "time map error: {e}"),
+            PlayerError::Index(msg) => write!(f, "index error: {msg}"),
         }
     }
 }
@@ -39,6 +44,7 @@ impl std::error::Error for PlayerError {
         match self {
             PlayerError::Parse(e) => Some(e),
             PlayerError::TimeMap(e) => Some(e),
+            PlayerError::Index(_) => None,
         }
     }
 }
@@ -123,6 +129,23 @@ impl fmt::Debug for Player {
 
 impl Player {
     /// Load a recording from a reader using default options.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use speedrun_core::Player;
+    ///
+    /// let data = b"{\"version\":2,\"width\":80,\"height\":24}\n[0.5,\"o\",\"hello\"]\n[1.0,\"o\",\" world\"]";
+    /// let mut player = Player::load(&data[..]).unwrap();
+    ///
+    /// assert_eq!(player.size(), (80, 24));
+    /// assert!(player.duration() > 0.0);
+    ///
+    /// // Seek to a point and inspect screen content
+    /// player.seek(1.0);
+    /// let screen = player.screen();
+    /// assert!(!screen.is_empty());
+    /// ```
     pub fn load(reader: impl Read) -> Result<Self, PlayerError> {
         Self::load_with(reader, LoadOptions::default())
     }
@@ -143,7 +166,7 @@ impl Player {
         let time_map = TimeMap::build(&raw_times, resolved_limit)?;
 
         // Build keyframe index
-        let index = KeyframeIndex::build(&recording, &time_map, opts.keyframe_interval);
+        let index = KeyframeIndex::build(&recording, &time_map, opts.keyframe_interval)?;
 
         // Create initial virtual terminal
         let vt = create_vt(
@@ -199,9 +222,17 @@ impl Player {
         // Find the nearest keyframe at or before target_time
         match self.index.keyframe_at(target_time) {
             Some(kf_idx) => {
-                let keyframe = self.index.get(kf_idx).expect("keyframe index in bounds");
-                self.vt = keyframe.snapshot.restore();
-                self.current_event_index = keyframe.event_index;
+                if let Some(keyframe) = self.index.get(kf_idx) {
+                    self.vt = keyframe.snapshot.restore();
+                    self.current_event_index = keyframe.event_index;
+                } else {
+                    // Fallback: reset to initial state
+                    self.vt = create_vt(
+                        self.recording.header.width as usize,
+                        self.recording.header.height as usize,
+                    );
+                    self.current_event_index = 0;
+                }
             }
             None => {
                 // Target is before first keyframe or index is empty
@@ -223,20 +254,7 @@ impl Player {
             }
 
             let event = &self.recording.events[self.current_event_index];
-            match (&event.event_type, &event.data) {
-                (EventType::Output, EventData::Text(data)) => {
-                    let _ = self.vt.feed_str(data);
-                }
-                (EventType::Resize, EventData::Resize { cols, rows }) => {
-                    // xtwinops: rows;cols order (opposite of EventData field order)
-                    let _ = self.vt.feed_str(&format!("\x1b[8;{rows};{cols}t"));
-                }
-                // Input and Marker events don't affect terminal state
-                (EventType::Input, _) | (EventType::Marker, _) => {}
-                // Ignore mismatched type/data combinations
-                _ => {}
-            }
-
+            feed_event(&mut self.vt, event);
             self.current_event_index += 1;
         }
 
@@ -319,8 +337,16 @@ impl Player {
     }
 
     /// Set the playback speed multiplier.
+    ///
+    /// Valid range: 0.25 to 4.0. Values outside the range are clamped.
+    /// NaN and negative-infinite values reset to 1.0.
+    /// Positive-infinite values are clamped to the maximum (4.0).
     pub fn set_speed(&mut self, speed: f64) {
-        self.speed = speed;
+        if speed.is_nan() || speed == f64::NEG_INFINITY {
+            self.speed = 1.0;
+        } else {
+            self.speed = speed.clamp(0.25, 4.0);
+        }
     }
 
     /// Current playback speed multiplier.
@@ -354,20 +380,9 @@ impl Player {
             }
 
             let event = &self.recording.events[self.current_event_index];
-            match (&event.event_type, &event.data) {
-                (EventType::Output, EventData::Text(data)) => {
-                    let _ = self.vt.feed_str(data);
-                    state_changed = true;
-                }
-                (EventType::Resize, EventData::Resize { cols, rows }) => {
-                    let _ = self.vt.feed_str(&format!("\x1b[8;{rows};{cols}t"));
-                    state_changed = true;
-                }
-                // Input and Marker events don't affect terminal state
-                (EventType::Input, _) | (EventType::Marker, _) => {}
-                _ => {}
+            if feed_event(&mut self.vt, event) {
+                state_changed = true;
             }
-
             self.current_event_index += 1;
         }
 
@@ -462,20 +477,14 @@ impl Player {
         let mut idx = self.current_event_index;
         while idx < self.recording.events.len() {
             let event = &self.recording.events[idx];
-            match (&event.event_type, &event.data) {
-                (EventType::Output, EventData::Text(data)) => {
-                    let _ = self.vt.feed_str(data);
-                    if let Some(t) = self.time_map.effective_time(idx) {
-                        self.current_time = t;
-                    }
-                    self.current_event_index = idx + 1;
-                    return true;
+            let is_output = event.event_type == EventType::Output;
+            feed_event(&mut self.vt, event);
+            if is_output {
+                if let Some(t) = self.time_map.effective_time(idx) {
+                    self.current_time = t;
                 }
-                (EventType::Resize, EventData::Resize { cols, rows }) => {
-                    let _ = self.vt.feed_str(&format!("\x1b[8;{rows};{cols}t"));
-                }
-                // Input / Marker: skip
-                _ => {}
+                self.current_event_index = idx + 1;
+                return true;
             }
             idx += 1;
         }
@@ -520,20 +529,13 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    fn testdata_path(name: &str) -> std::path::PathBuf {
-        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        p.push("../../testdata");
-        p.push(name);
-        p
-    }
-
     fn load_file(name: &str) -> Player {
-        let file = std::fs::File::open(testdata_path(name)).unwrap();
+        let file = std::fs::File::open(crate::testdata_path(name)).unwrap();
         Player::load(file).unwrap()
     }
 
     fn load_file_with(name: &str, opts: LoadOptions) -> Player {
-        let file = std::fs::File::open(testdata_path(name)).unwrap();
+        let file = std::fs::File::open(crate::testdata_path(name)).unwrap();
         Player::load_with(file, opts).unwrap()
     }
 
@@ -563,7 +565,7 @@ mod tests {
             "real_session.cast",
         ];
         for name in &files {
-            let file = std::fs::File::open(testdata_path(name)).unwrap();
+            let file = std::fs::File::open(crate::testdata_path(name)).unwrap();
             Player::load(file).unwrap_or_else(|e| panic!("failed to load {name}: {e}"));
         }
     }
@@ -1343,6 +1345,73 @@ mod tests {
             !stepped,
             "step_backward with one event processed should return false"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // set_speed() clamping tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_speed_clamp_low() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(0.0);
+        assert_f64_eq(player.speed(), 0.25);
+    }
+
+    #[test]
+    fn test_set_speed_clamp_high() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(10.0);
+        assert_f64_eq(player.speed(), 4.0);
+    }
+
+    #[test]
+    fn test_set_speed_clamp_negative() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(-1.0);
+        assert_f64_eq(player.speed(), 0.25);
+    }
+
+    #[test]
+    fn test_set_speed_nan() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(f64::NAN);
+        assert_f64_eq(player.speed(), 1.0);
+    }
+
+    #[test]
+    fn test_set_speed_infinity() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(f64::INFINITY);
+        assert_f64_eq(player.speed(), 4.0);
+    }
+
+    #[test]
+    fn test_set_speed_neg_infinity() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(f64::NEG_INFINITY);
+        assert_f64_eq(player.speed(), 1.0);
+    }
+
+    #[test]
+    fn test_set_speed_in_range() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(2.0);
+        assert_f64_eq(player.speed(), 2.0);
+    }
+
+    #[test]
+    fn test_set_speed_boundary_low() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(0.25);
+        assert_f64_eq(player.speed(), 0.25);
+    }
+
+    #[test]
+    fn test_set_speed_boundary_high() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(4.0);
+        assert_f64_eq(player.speed(), 4.0);
     }
 
     // -----------------------------------------------------------------------
