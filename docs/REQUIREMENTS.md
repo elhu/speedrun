@@ -721,7 +721,6 @@ These are explicitly **not** included in v1:
 - **Web player** — WASM build is a future phase.
 - **Mouse support** — keyboard only. No click-to-seek, no scroll.
 - **Text search** — searching recording content by string.
-- **Annotations / chapters** — sidecar metadata files.
 - **Live streaming** — real-time stream playback.
 - **Export** — GIF, MP4, or other format export.
 - **Keyframe sidecar cache** — pre-computed `.cast.idx` files.
@@ -741,13 +740,10 @@ Compile `speedrun-core` to WASM via `wasm-bindgen`. Build a JS/TS rendering laye
 ### Phase 7 — Text search
 `/` to search for a string across the recording, jumping to timestamps where it appears on screen. Implementation: scan keyframe snapshots for matches first (fast), then narrow down between keyframes for precise timing.
 
-### Phase 8 — Annotations and chapters
-Sidecar file (`.cast.meta`) with named timestamps and notes. Rendered as chapter markers on the timeline. UI for navigating between chapters.
-
-### Phase 9 — Export
+### Phase 8 — Export
 `speedrun export --format gif demo.cast` — render keyframe snapshots to animated GIF or MP4. Leverage the existing keyframe infrastructure for frame generation.
 
-### Phase 10 — Keyframe sidecar cache
+### Phase 9 — Keyframe sidecar cache
 Write pre-computed keyframes to `demo.cast.idx` for instant load on very long recordings. Versioned format so cache invalidation is automatic when the recording or speedrun version changes.
 
 ---

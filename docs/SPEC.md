@@ -465,7 +465,6 @@ asciinema play demo.cast
 - **Web player.** Compile `speedrun-core` to WASM via `wasm-bindgen`. Render to `<canvas>` with a JS controls UI. Ship as an npm package and/or a `<speedrun-player>` web component. The core API is already designed to be WASM-friendly (no filesystem, no threads, caller provides `Read`).
 - **Mouse support.** Click-to-seek on the progress bar, scroll to change speed. Needs careful handling of tmux/screen mouse passthrough.
 - **Text search.** `/` to search for a string across the recording, jumping to the timestamp where it appears on screen. Scan keyframe snapshots first, then narrow down between keyframes.
-- **Annotations / chapters.** A sidecar file (`.cast.meta`) with named timestamps and notes. Rendered as chapter markers on the timeline.
 - **Thumbnail strip.** Generate a visual preview strip from keyframe snapshots for the web player.
 - **Recording trimming.** `speedrun cut --from 10s --to 30s demo.cast` — simple NDJSON event filtering.
 - **Live streaming playback.** Connect to an asciinema stream endpoint and play in real-time.
