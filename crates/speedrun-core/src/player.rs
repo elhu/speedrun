@@ -25,6 +25,8 @@ pub enum PlayerError {
     Parse(ParseError),
     /// The time map could not be built (e.g. invalid idle limit).
     TimeMap(TimeMapError),
+    /// The keyframe index could not be built.
+    Index(String),
 }
 
 impl fmt::Display for PlayerError {
@@ -32,6 +34,7 @@ impl fmt::Display for PlayerError {
         match self {
             PlayerError::Parse(e) => write!(f, "parse error: {e}"),
             PlayerError::TimeMap(e) => write!(f, "time map error: {e}"),
+            PlayerError::Index(msg) => write!(f, "index error: {msg}"),
         }
     }
 }
@@ -41,6 +44,7 @@ impl std::error::Error for PlayerError {
         match self {
             PlayerError::Parse(e) => Some(e),
             PlayerError::TimeMap(e) => Some(e),
+            PlayerError::Index(_) => None,
         }
     }
 }
@@ -162,7 +166,7 @@ impl Player {
         let time_map = TimeMap::build(&raw_times, resolved_limit)?;
 
         // Build keyframe index
-        let index = KeyframeIndex::build(&recording, &time_map, opts.keyframe_interval);
+        let index = KeyframeIndex::build(&recording, &time_map, opts.keyframe_interval)?;
 
         // Create initial virtual terminal
         let vt = create_vt(
@@ -218,9 +222,17 @@ impl Player {
         // Find the nearest keyframe at or before target_time
         match self.index.keyframe_at(target_time) {
             Some(kf_idx) => {
-                let keyframe = self.index.get(kf_idx).expect("keyframe index in bounds");
-                self.vt = keyframe.snapshot.restore();
-                self.current_event_index = keyframe.event_index;
+                if let Some(keyframe) = self.index.get(kf_idx) {
+                    self.vt = keyframe.snapshot.restore();
+                    self.current_event_index = keyframe.event_index;
+                } else {
+                    // Fallback: reset to initial state
+                    self.vt = create_vt(
+                        self.recording.header.width as usize,
+                        self.recording.header.height as usize,
+                    );
+                    self.current_event_index = 0;
+                }
             }
             None => {
                 // Target is before first keyframe or index is empty
@@ -325,8 +337,16 @@ impl Player {
     }
 
     /// Set the playback speed multiplier.
+    ///
+    /// Valid range: 0.25 to 4.0. Values outside the range are clamped.
+    /// NaN and negative-infinite values reset to 1.0.
+    /// Positive-infinite values are clamped to the maximum (4.0).
     pub fn set_speed(&mut self, speed: f64) {
-        self.speed = speed;
+        if speed.is_nan() || speed == f64::NEG_INFINITY {
+            self.speed = 1.0;
+        } else {
+            self.speed = speed.clamp(0.25, 4.0);
+        }
     }
 
     /// Current playback speed multiplier.
@@ -1289,6 +1309,73 @@ mod tests {
             !stepped,
             "step_backward with one event processed should return false"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // set_speed() clamping tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_speed_clamp_low() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(0.0);
+        assert_f64_eq(player.speed(), 0.25);
+    }
+
+    #[test]
+    fn test_set_speed_clamp_high() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(10.0);
+        assert_f64_eq(player.speed(), 4.0);
+    }
+
+    #[test]
+    fn test_set_speed_clamp_negative() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(-1.0);
+        assert_f64_eq(player.speed(), 0.25);
+    }
+
+    #[test]
+    fn test_set_speed_nan() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(f64::NAN);
+        assert_f64_eq(player.speed(), 1.0);
+    }
+
+    #[test]
+    fn test_set_speed_infinity() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(f64::INFINITY);
+        assert_f64_eq(player.speed(), 4.0);
+    }
+
+    #[test]
+    fn test_set_speed_neg_infinity() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(f64::NEG_INFINITY);
+        assert_f64_eq(player.speed(), 1.0);
+    }
+
+    #[test]
+    fn test_set_speed_in_range() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(2.0);
+        assert_f64_eq(player.speed(), 2.0);
+    }
+
+    #[test]
+    fn test_set_speed_boundary_low() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(0.25);
+        assert_f64_eq(player.speed(), 0.25);
+    }
+
+    #[test]
+    fn test_set_speed_boundary_high() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(4.0);
+        assert_f64_eq(player.speed(), 4.0);
     }
 
     // -----------------------------------------------------------------------
