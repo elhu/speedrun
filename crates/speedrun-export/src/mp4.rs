@@ -21,7 +21,7 @@ use std::path::Path;
 use speedrun_core::Player;
 
 use crate::palette::ExportOptions;
-use crate::renderer::ScreenRenderer;
+use crate::renderer::{FontError, ScreenRenderer};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -32,6 +32,8 @@ use crate::renderer::ScreenRenderer;
 pub enum Mp4Error {
     /// An I/O error occurred (pipe, file, etc.).
     Io(std::io::Error),
+    /// Font loading/parsing failed.
+    Font(FontError),
     /// `ffmpeg` was not found on PATH.
     FfmpegNotFound,
     /// `ffmpeg` exited with a non-zero status.
@@ -47,6 +49,7 @@ impl std::fmt::Display for Mp4Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Mp4Error::Io(e) => write!(f, "I/O error: {e}"),
+            Mp4Error::Font(e) => write!(f, "font error: {e}"),
             Mp4Error::FfmpegNotFound => write!(
                 f,
                 "ffmpeg not found on PATH. Please install ffmpeg to export MP4 files."
@@ -68,6 +71,7 @@ impl std::error::Error for Mp4Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Mp4Error::Io(e) => Some(e),
+            Mp4Error::Font(e) => Some(e),
             Mp4Error::FfmpegNotFound => None,
             Mp4Error::FfmpegFailed { .. } => None,
         }
@@ -77,6 +81,12 @@ impl std::error::Error for Mp4Error {
 impl From<std::io::Error> for Mp4Error {
     fn from(e: std::io::Error) -> Self {
         Mp4Error::Io(e)
+    }
+}
+
+impl From<FontError> for Mp4Error {
+    fn from(e: FontError) -> Self {
+        Mp4Error::Font(e)
     }
 }
 
@@ -94,6 +104,8 @@ pub struct Mp4Options {
     pub crf: u8,
     /// Color palette configuration.
     pub export: ExportOptions,
+    /// Optional custom font data (TTF/OTF bytes).
+    pub font_data: Option<Vec<u8>>,
 }
 
 impl Default for Mp4Options {
@@ -103,6 +115,7 @@ impl Default for Mp4Options {
             scale: 1,
             crf: 23,
             export: ExportOptions::default(),
+            font_data: None,
         }
     }
 }
@@ -177,7 +190,8 @@ pub fn export_mp4(
             bold_brightens: options.export.bold_brightens,
         },
         options.scale,
-    );
+        options.font_data.as_deref(),
+    )?;
 
     // 2. Compute frame dimensions.
     let img_w = w as u32 * renderer.cell_width;
