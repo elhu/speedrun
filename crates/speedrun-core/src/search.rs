@@ -535,7 +535,7 @@ mod tests {
         let recording = crate::parse(std::io::Cursor::new(data)).unwrap();
         let raw_times: Vec<f64> = recording.events.iter().map(|e| e.time).collect();
         let time_map = TimeMap::build(&raw_times, recording.header.idle_time_limit).unwrap();
-        let index = KeyframeIndex::build(&recording, &time_map, crate::index::KEYFRAME_INTERVAL);
+        let index = KeyframeIndex::build(&recording, &time_map, crate::index::KEYFRAME_INTERVAL).unwrap();
         (recording, time_map, index)
     }
 
