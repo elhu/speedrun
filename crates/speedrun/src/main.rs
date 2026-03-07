@@ -542,7 +542,12 @@ fn main() {
         std::process::exit(1);
     });
 
-    let mut app = app::App::new(player, !args.no_controls, args.pause_at_markers);
+    let file_path = if file.as_os_str() == "-" {
+        None
+    } else {
+        Some(file.clone())
+    };
+    let mut app = app::App::new(player, !args.no_controls, args.pause_at_markers, file_path);
     let result = app.run(&mut terminal);
 
     // Always restore terminal, even if run() returned an error

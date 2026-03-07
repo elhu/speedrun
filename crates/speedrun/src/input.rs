@@ -28,6 +28,7 @@ pub enum Action {
     NextMatch,
     PrevMatch,
     Escape,
+    AddMarker,
 }
 
 /// Map a crossterm key event to a player action.
@@ -70,6 +71,9 @@ pub fn map_key_event(key: KeyEvent) -> Option<Action> {
         // Marker navigation
         KeyCode::Char(']') => Some(Action::NextMarker),
         KeyCode::Char('[') => Some(Action::PrevMarker),
+
+        // Marker authoring
+        KeyCode::Char('m') => Some(Action::AddMarker),
 
         // Percent jump (digit keys 0-9)
         KeyCode::Char(c @ '0'..='9') => {
@@ -316,6 +320,16 @@ mod tests {
         assert_eq!(
             map_key_event(key(KeyCode::Char('N'))),
             Some(Action::PrevMatch)
+        );
+    }
+
+    // ── Marker authoring ──────────────────────────────────────────────────────
+
+    #[test]
+    fn m_maps_to_add_marker() {
+        assert_eq!(
+            map_key_event(key(KeyCode::Char('m'))),
+            Some(Action::AddMarker)
         );
     }
 
