@@ -51,6 +51,10 @@ struct Args {
     /// Start with the controls bar hidden.
     #[arg(long)]
     no_controls: bool,
+
+    /// Pause playback automatically when a marker boundary is crossed.
+    #[arg(short = 'm', long)]
+    pause_at_markers: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -538,7 +542,7 @@ fn main() {
         std::process::exit(1);
     });
 
-    let mut app = app::App::new(player, !args.no_controls);
+    let mut app = app::App::new(player, !args.no_controls, args.pause_at_markers);
     let result = app.run(&mut terminal);
 
     // Always restore terminal, even if run() returned an error
@@ -592,6 +596,20 @@ mod tests {
             }
             _ => panic!("expected export svg subcommand"),
         }
+    }
+
+    #[test]
+    fn test_pause_at_markers_long_flag() {
+        let args = Args::try_parse_from(["speedrun", "--pause-at-markers", "file.cast"])
+            .expect("should accept --pause-at-markers flag");
+        assert!(args.pause_at_markers);
+    }
+
+    #[test]
+    fn test_pause_at_markers_short_flag() {
+        let args = Args::try_parse_from(["speedrun", "-m", "file.cast"])
+            .expect("should accept -m short flag");
+        assert!(args.pause_at_markers);
     }
 
     #[test]

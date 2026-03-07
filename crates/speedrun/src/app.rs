@@ -42,6 +42,24 @@ fn next_speed(current: f64, direction: i8) -> f64 {
     }
 }
 
+/// Find the first marker whose time falls in the half-open interval (prev_time, new_time].
+///
+/// Returns the time of the earliest such marker, or `None` if no marker falls in that
+/// interval. The lower bound is exclusive to prevent re-triggering on resume after
+/// auto-pause at a marker. The upper bound is inclusive so that a marker exactly at
+/// `new_time` is detected.
+fn find_crossed_marker(
+    markers: &[speedrun_core::Marker],
+    prev_time: f64,
+    new_time: f64,
+) -> Option<f64> {
+    markers
+        .iter()
+        .filter(|m| m.time > prev_time && m.time <= new_time)
+        .map(|m| m.time)
+        .reduce(f64::min) // first marker if multiple
+}
+
 /// Modal input mode for the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
@@ -77,10 +95,12 @@ pub struct App {
     pub current_match_index: Option<usize>,
     /// Transient "No matches" feedback message, with expiry time.
     pub no_match_feedback: Option<Instant>,
+    /// Whether to auto-pause when a marker boundary is crossed during tick().
+    pub pause_at_markers: bool,
 }
 
 impl App {
-    pub fn new(player: Player, show_controls: bool) -> Self {
+    pub fn new(player: Player, show_controls: bool, pause_at_markers: bool) -> Self {
         // If show_controls is false (--no-controls), start manually hidden.
         // Otherwise, force-show for the initial 2s window.
         Self {
@@ -97,6 +117,7 @@ impl App {
             search_query: None,
             current_match_index: None,
             no_match_feedback: None,
+            pause_at_markers,
         }
     }
 
@@ -193,7 +214,23 @@ impl App {
             last_tick = now;
 
             if self.player.is_playing() {
+                let prev_time = self.player.current_time(); // capture before tick
                 self.player.tick(dt);
+                // Auto-pause at markers when --pause-at-markers is active.
+                if self.pause_at_markers
+                    && let Some(marker_time) = find_crossed_marker(
+                        self.player.markers(),
+                        prev_time,
+                        self.player.current_time(),
+                    )
+                {
+                    self.player.pause();
+                    // seek() restores exact terminal state at marker time, since
+                    // tick() may have processed events slightly past the marker.
+                    self.player.seek(marker_time);
+                    self.controls_force_show = true;
+                    self.controls_manually_hidden = false;
+                }
                 // Always redraw while playing so time display and progress bar
                 // update smoothly (~30fps), not just when events fire.
                 needs_redraw = true;
@@ -649,7 +686,7 @@ mod tests {
         let (cols, rows) = player.size();
 
         // Construct the App
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         // Create a TestBackend terminal sized to the recording dimensions
         let backend = TestBackend::new(cols, rows);
@@ -671,7 +708,7 @@ mod tests {
     fn compute_timeout_paused_returns_100ms() {
         // Load a file, don't call play() — player starts paused
         let player = load_player("minimal_v2.cast");
-        let app = App::new(player, true);
+        let app = App::new(player, true, false);
 
         // When paused, time_to_next_event() returns None → fallback 100ms
         assert_eq!(app.compute_timeout(), Duration::from_millis(100));
@@ -685,7 +722,7 @@ mod tests {
 
         // At t=0 playing at 1×, first event is at 0.5s → time_to_next_event ≈ 0.5s
         let expected = player.time_to_next_event().unwrap();
-        let app = App::new(player, true);
+        let app = App::new(player, true, false);
 
         // Controls are visible initially (force_show=true), so compute_timeout
         // returns min(playback_timeout, hide_deadline). Since last_interaction is
@@ -703,7 +740,7 @@ mod tests {
         // Player should now be auto-paused
         assert!(!player.is_playing());
 
-        let app = App::new(player, true);
+        let app = App::new(player, true, false);
         // time_to_next_event() returns None when paused → fallback 100ms
         assert_eq!(app.compute_timeout(), Duration::from_millis(100));
     }
@@ -714,7 +751,7 @@ mod tests {
         // With the 33ms cap applied while playing, timeout must be <= 33ms.
         let mut player = load_player("minimal_v2.cast");
         player.play();
-        let app = App::new(player, true);
+        let app = App::new(player, true, false);
         assert!(
             app.compute_timeout() <= Duration::from_millis(33),
             "compute_timeout while playing should be capped at 33ms, got {:?}",
@@ -727,7 +764,7 @@ mod tests {
         // Load a file without playing; time_to_next_event returns None → fallback 100ms.
         // When paused, the 33ms cap is NOT applied, so result should be > 33ms.
         let player = load_player("minimal_v2.cast");
-        let app = App::new(player, true);
+        let app = App::new(player, true, false);
         assert!(
             app.compute_timeout() > Duration::from_millis(33),
             "compute_timeout while paused should exceed 33ms, got {:?}",
@@ -746,7 +783,7 @@ mod tests {
         let duration = player.duration();
         assert!(player.current_time() >= duration);
 
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
         app.handle_action(Action::TogglePlayback);
 
         assert!(
@@ -765,7 +802,7 @@ mod tests {
         // On a zero-duration recording, pressing Space should toggle without seeking or panicking.
         let player = load_player("empty.cast");
         assert_eq!(player.duration(), 0.0);
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
 
         // Should not panic
         app.handle_action(Action::TogglePlayback);
@@ -848,7 +885,7 @@ mod tests {
         let mut player = load_player("minimal_v2.cast");
         // Ensure starting speed is 1.0
         player.set_speed(1.0);
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
 
         app.handle_action(Action::SpeedUp);
         assert!((app.player.speed() - 1.5).abs() < 1e-9);
@@ -859,7 +896,7 @@ mod tests {
     fn speed_down_action_changes_player_speed() {
         let mut player = load_player("minimal_v2.cast");
         player.set_speed(1.0);
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
 
         app.handle_action(Action::SpeedDown);
         assert!((app.player.speed() - 0.5).abs() < 1e-9);
@@ -872,7 +909,7 @@ mod tests {
     fn seek_forward_30s_from_start() {
         // minimal_v2.cast has duration 2.1s — seeking 30s forward should clamp to duration
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
 
         app.handle_action(Action::SeekForward30s);
         assert!((app.player.current_time() - app.player.duration()).abs() < 1e-9);
@@ -883,7 +920,7 @@ mod tests {
     fn seek_backward_30s_clamps_to_zero() {
         let mut player = load_player("minimal_v2.cast");
         player.seek(1.5);
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
 
         app.handle_action(Action::SeekBackward30s);
         assert!((app.player.current_time() - 0.0).abs() < 1e-9);
@@ -895,7 +932,7 @@ mod tests {
     #[test]
     fn step_forward_while_paused_advances() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
         assert!(!app.player.is_playing());
 
         app.handle_action(Action::StepForward);
@@ -908,7 +945,7 @@ mod tests {
     fn step_backward_while_paused_goes_back() {
         let mut player = load_player("minimal_v2.cast");
         player.seek(1.5); // between events at 1.2 and 2.0
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
         assert!(!app.player.is_playing());
 
         // With the fix, step_backward skips the currently displayed event (index 1, t=1.2)
@@ -922,7 +959,7 @@ mod tests {
     fn step_forward_while_playing_does_nothing() {
         let mut player = load_player("minimal_v2.cast");
         player.play();
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
         assert!(app.player.is_playing());
 
         app.handle_action(Action::StepForward);
@@ -936,7 +973,7 @@ mod tests {
     fn next_marker_from_start() {
         // with_markers.cast has markers at 3.0 and 7.0
         let player = load_player("with_markers.cast");
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
 
         app.handle_action(Action::NextMarker);
         assert!((app.player.current_time() - 3.0).abs() < 1e-9);
@@ -947,7 +984,7 @@ mod tests {
     fn next_marker_from_first_marker() {
         let mut player = load_player("with_markers.cast");
         player.seek(3.0);
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
 
         app.handle_action(Action::NextMarker);
         assert!((app.player.current_time() - 7.0).abs() < 1e-9);
@@ -957,7 +994,7 @@ mod tests {
     fn next_marker_past_last_seeks_to_end() {
         let mut player = load_player("with_markers.cast");
         player.seek(7.0);
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
         let duration = app.player.duration();
 
         app.handle_action(Action::NextMarker);
@@ -969,7 +1006,7 @@ mod tests {
     fn prev_marker_from_last_marker() {
         let mut player = load_player("with_markers.cast");
         player.seek(7.0);
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
 
         app.handle_action(Action::PrevMarker);
         assert!((app.player.current_time() - 3.0).abs() < 1e-9);
@@ -980,7 +1017,7 @@ mod tests {
     fn prev_marker_before_first_seeks_to_start() {
         let mut player = load_player("with_markers.cast");
         player.seek(3.0);
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
 
         app.handle_action(Action::PrevMarker);
         // Should seek to start of recording when no marker exists before current position
@@ -991,7 +1028,7 @@ mod tests {
     fn prev_marker_from_mid_recording() {
         let mut player = load_player("with_markers.cast");
         player.seek(5.0); // between markers at 3.0 and 7.0
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
 
         app.handle_action(Action::PrevMarker);
         assert!((app.player.current_time() - 3.0).abs() < 1e-9);
@@ -1001,7 +1038,7 @@ mod tests {
     fn next_marker_no_markers_seeks_to_end() {
         // minimal_v2.cast has no markers
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
         let duration = app.player.duration();
 
         app.handle_action(Action::NextMarker);
@@ -1014,7 +1051,7 @@ mod tests {
         // minimal_v2.cast has no markers; PrevMarker from mid → seeks to start
         let mut player = load_player("minimal_v2.cast");
         player.seek(1.0);
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
 
         app.handle_action(Action::PrevMarker);
         // No markers in recording → seeks to start (0.0)
@@ -1027,7 +1064,7 @@ mod tests {
     fn jump_to_percent_0() {
         let mut player = load_player("with_markers.cast");
         player.seek(4.0);
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
 
         app.handle_action(Action::JumpToPercent(0));
         assert!((app.player.current_time() - 0.0).abs() < 1e-9);
@@ -1038,7 +1075,7 @@ mod tests {
     fn jump_to_percent_5() {
         // with_markers.cast has duration 8.0, so 50% = 4.0
         let player = load_player("with_markers.cast");
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
         let duration = app.player.duration();
 
         app.handle_action(Action::JumpToPercent(5));
@@ -1054,7 +1091,7 @@ mod tests {
     fn jump_to_percent_9() {
         // with_markers.cast has duration 8.0, so 90% = 7.2
         let player = load_player("with_markers.cast");
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
         let duration = app.player.duration();
 
         app.handle_action(Action::JumpToPercent(9));
@@ -1072,7 +1109,7 @@ mod tests {
     fn jump_to_start() {
         let mut player = load_player("minimal_v2.cast");
         player.seek(1.5);
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
 
         app.handle_action(Action::JumpToStart);
         assert!((app.player.current_time() - 0.0).abs() < 1e-9);
@@ -1083,7 +1120,7 @@ mod tests {
     fn jump_to_end_pauses_player() {
         let mut player = load_player("minimal_v2.cast");
         player.play();
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
         assert!(app.player.is_playing());
 
         app.handle_action(Action::JumpToEnd);
@@ -1098,7 +1135,7 @@ mod tests {
     #[test]
     fn jump_to_end_already_paused() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
         assert!(!app.player.is_playing());
 
         app.handle_action(Action::JumpToEnd);
@@ -1111,7 +1148,7 @@ mod tests {
     #[test]
     fn navigation_on_empty_recording_no_panic() {
         let player = load_player("empty.cast");
-        let mut app = App::new(player, false);
+        let mut app = App::new(player, false, false);
 
         // None of these should panic
         app.handle_action(Action::SeekForward30s);
@@ -1130,14 +1167,14 @@ mod tests {
     #[test]
     fn controls_visible_initial_show_controls_true() {
         let player = load_player("minimal_v2.cast");
-        let app = App::new(player, true);
+        let app = App::new(player, true, false);
         assert!(app.controls_visible());
     }
 
     #[test]
     fn controls_visible_initial_no_controls() {
         let player = load_player("minimal_v2.cast");
-        let app = App::new(player, false);
+        let app = App::new(player, false, false);
         assert!(!app.controls_visible());
     }
 
@@ -1145,7 +1182,7 @@ mod tests {
     fn controls_auto_hide_when_playing_and_idle() {
         let mut player = load_player("minimal_v2.cast");
         player.play();
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
         // Simulate 3 seconds of no interaction
         app.last_interaction = Instant::now() - Duration::from_secs(3);
         // force_show must be false for auto-hide to kick in
@@ -1157,7 +1194,7 @@ mod tests {
     fn controls_visible_within_2s_window() {
         let mut player = load_player("minimal_v2.cast");
         player.play();
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
         // Simulate 1 second of no interaction (within 2s window)
         app.last_interaction = Instant::now() - Duration::from_secs(1);
         app.controls_force_show = false;
@@ -1168,7 +1205,7 @@ mod tests {
     fn controls_visible_after_seek_forward() {
         let mut player = load_player("minimal_v2.cast");
         player.play();
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
         // Simulate old interaction time
         app.last_interaction = Instant::now() - Duration::from_secs(10);
         app.controls_force_show = false;
@@ -1183,7 +1220,7 @@ mod tests {
     #[test]
     fn controls_visible_when_paused() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
         // Simulate old interaction, but player is paused
         app.last_interaction = Instant::now() - Duration::from_secs(10);
         app.controls_force_show = true; // force_show is set when paused
@@ -1194,7 +1231,7 @@ mod tests {
     #[test]
     fn controls_tab_toggle_hides_and_shows() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
         assert!(app.controls_visible());
 
         // Tab hides
@@ -1209,7 +1246,7 @@ mod tests {
     #[test]
     fn controls_manual_hide_persists_over_recent_interaction() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
         // Tab to hide
         app.handle_action(Action::ToggleControls);
         // Even with recent interaction, manually hidden stays hidden
@@ -1220,7 +1257,7 @@ mod tests {
     #[test]
     fn controls_manual_hide_cleared_by_seek() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
         // Tab to hide
         app.handle_action(Action::ToggleControls);
         assert!(!app.controls_visible());
@@ -1238,7 +1275,7 @@ mod tests {
         player.tick(player.duration() + 10.0);
         assert!(!player.is_playing()); // auto-paused
 
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
         // On auto-pause at end, force_show should be true; simulate the state
         // that would be set when TogglePlayback is called during pause detection.
         // Here we directly set force_show to test the is_at_end case.
@@ -1288,7 +1325,7 @@ mod tests {
         let (cols, rows) = player.size();
         player.seek(player.duration());
 
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         // Use a backend bigger than recording so controls go below
         let backend = TestBackend::new(cols, rows + 1);
@@ -1317,7 +1354,7 @@ mod tests {
     fn toggle_help_while_playing_pauses_and_shows_overlay() {
         let mut player = load_player("minimal_v2.cast");
         player.play();
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::ToggleHelp);
 
@@ -1329,7 +1366,7 @@ mod tests {
     fn dismiss_help_resumes_if_was_playing() {
         let mut player = load_player("minimal_v2.cast");
         player.play();
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::ToggleHelp); // show help (was playing)
         app.handle_action(Action::ToggleHelp); // dismiss help
@@ -1342,7 +1379,7 @@ mod tests {
     fn toggle_help_while_paused_stays_paused_on_dismiss() {
         let player = load_player("minimal_v2.cast");
         // player starts paused — do NOT call play()
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::ToggleHelp); // show help (was paused)
         assert!(app.help_visible);
@@ -1358,7 +1395,7 @@ mod tests {
     #[test]
     fn esc_dismisses_help_when_visible() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::ToggleHelp); // show help
         assert!(app.help_visible);
@@ -1371,7 +1408,7 @@ mod tests {
     #[test]
     fn esc_quits_when_nothing_active() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::Escape);
         assert!(app.should_quit);
@@ -1380,7 +1417,7 @@ mod tests {
     #[test]
     fn q_dismisses_help_when_visible() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::ToggleHelp); // show help
         app.handle_action(Action::Quit); // q → dismiss help
@@ -1392,7 +1429,7 @@ mod tests {
     #[test]
     fn q_quits_after_help_dismissed() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::ToggleHelp); // show help
         app.handle_action(Action::Quit); // q → dismiss help
@@ -1407,7 +1444,7 @@ mod tests {
     fn seek_forward_blocked_while_help_visible() {
         let mut player = load_player("minimal_v2.cast");
         player.play();
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         let pos_before = app.player.current_time();
         app.handle_action(Action::ToggleHelp); // show help
@@ -1419,7 +1456,7 @@ mod tests {
     #[test]
     fn speed_up_blocked_while_help_visible() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         let speed_before = app.player.speed();
         app.handle_action(Action::ToggleHelp); // show help
@@ -1431,7 +1468,7 @@ mod tests {
     #[test]
     fn toggle_help_dismisses_overlay_while_visible() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::ToggleHelp); // show
         assert!(app.help_visible);
@@ -1446,7 +1483,7 @@ mod tests {
         // Start with auto-hidden controls (playing, manually hidden cleared)
         let mut player = load_player("minimal_v2.cast");
         player.play();
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
         // Simulate controls having been auto-hidden
         app.controls_force_show = false;
         app.controls_manually_hidden = false;
@@ -1465,7 +1502,7 @@ mod tests {
         // Playing, then open help, then dismiss — controls_force_show should be cleared
         let mut player = load_player("minimal_v2.cast");
         player.play();
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::ToggleHelp); // pauses, sets force_show=true
         assert!(app.controls_force_show);
@@ -1483,7 +1520,7 @@ mod tests {
     fn dismiss_help_keeps_force_show_when_was_paused() {
         // Paused, then open help, then dismiss — controls should stay force-shown
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
         assert!(!app.player.is_playing());
 
         app.handle_action(Action::ToggleHelp);
@@ -1502,7 +1539,7 @@ mod tests {
     fn toggle_cycle_playing() {
         let mut player = load_player("minimal_v2.cast");
         player.play();
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         // ? → help shown, paused
         app.handle_action(Action::ToggleHelp);
@@ -1525,7 +1562,7 @@ mod tests {
     #[test]
     fn test_start_search_sets_input_mode() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::StartSearch);
         assert_eq!(app.input_mode, InputMode::SearchInput);
@@ -1534,7 +1571,7 @@ mod tests {
     #[test]
     fn test_esc_cancels_search_input() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::StartSearch);
         assert_eq!(app.input_mode, InputMode::SearchInput);
@@ -1555,7 +1592,7 @@ mod tests {
     #[test]
     fn test_esc_dismisses_help() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::ToggleHelp);
         assert!(app.help_visible);
@@ -1568,7 +1605,7 @@ mod tests {
     #[test]
     fn test_esc_clears_search() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.search_query = Some("test".to_string());
 
@@ -1581,7 +1618,7 @@ mod tests {
     #[test]
     fn test_esc_quits_when_nothing_active() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         // No search, no help
         app.handle_action(Action::Escape);
@@ -1592,7 +1629,7 @@ mod tests {
     fn test_esc_chain_order() {
         // Verify priority: search input mode > help overlay > search active > quit
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         // Set up all states: search query active, help visible, and search input mode
         app.search_query = Some("test".to_string());
@@ -1610,7 +1647,7 @@ mod tests {
     #[test]
     fn test_esc_chain_with_search_input_mode() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         // Enter search input mode
         app.handle_action(Action::StartSearch);
@@ -1628,7 +1665,7 @@ mod tests {
     #[test]
     fn test_esc_chain_help_before_search() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         // Set up help visible AND search query active
         app.search_query = Some("test".to_string());
@@ -1654,7 +1691,7 @@ mod tests {
     #[test]
     fn test_next_match_no_search_is_noop() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         let time_before = app.player.current_time();
         app.handle_action(Action::NextMatch);
@@ -1665,7 +1702,7 @@ mod tests {
     #[test]
     fn test_prev_match_no_search_is_noop() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         let time_before = app.player.current_time();
         app.handle_action(Action::PrevMatch);
@@ -1676,7 +1713,7 @@ mod tests {
     #[test]
     fn test_start_search_ignored_during_help() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::ToggleHelp);
         assert!(app.help_visible);
@@ -1690,7 +1727,7 @@ mod tests {
     #[test]
     fn test_search_input_inserts_characters() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::StartSearch);
         assert_eq!(app.input_mode, InputMode::SearchInput);
@@ -1722,7 +1759,7 @@ mod tests {
     #[test]
     fn test_search_input_backspace() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::StartSearch);
         app.handle_search_input(KeyEvent::new(
@@ -1745,7 +1782,7 @@ mod tests {
     #[test]
     fn test_search_enter_commits_query() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::StartSearch);
         app.handle_search_input(KeyEvent::new(
@@ -1768,7 +1805,7 @@ mod tests {
     #[test]
     fn test_search_empty_enter_cancels() {
         let player = load_player("minimal_v2.cast");
-        let mut app = App::new(player, true);
+        let mut app = App::new(player, true, false);
 
         app.handle_action(Action::StartSearch);
         // Enter with empty query
@@ -1779,5 +1816,61 @@ mod tests {
 
         assert_eq!(app.input_mode, InputMode::Normal);
         assert_eq!(app.search_query, None); // no query committed
+    }
+
+    // ── find_crossed_marker unit tests ──────────────────────────────────────
+
+    fn make_markers(times: &[f64]) -> Vec<speedrun_core::Marker> {
+        times
+            .iter()
+            .map(|&t| speedrun_core::Marker {
+                time: t,
+                label: String::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_find_crossed_marker_hit() {
+        let markers = make_markers(&[3.0, 7.0]);
+        let result = find_crossed_marker(&markers, 2.0, 4.0);
+        assert_eq!(result, Some(3.0));
+    }
+
+    #[test]
+    fn test_find_crossed_marker_miss() {
+        let markers = make_markers(&[3.0, 7.0]);
+        let result = find_crossed_marker(&markers, 4.0, 6.0);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_find_crossed_marker_multiple() {
+        // Multiple markers in range — should return first (lowest time)
+        let markers = make_markers(&[3.0, 5.0, 7.0]);
+        let result = find_crossed_marker(&markers, 2.0, 8.0);
+        assert_eq!(result, Some(3.0));
+    }
+
+    #[test]
+    fn test_find_crossed_marker_at_prev_time() {
+        // Marker exactly at prev_time is excluded (strict lower bound prevents re-trigger)
+        let markers = make_markers(&[3.0]);
+        let result = find_crossed_marker(&markers, 3.0, 5.0);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_find_crossed_marker_at_new_time() {
+        // Marker exactly at new_time is included (inclusive upper bound)
+        let markers = make_markers(&[3.0]);
+        let result = find_crossed_marker(&markers, 1.0, 3.0);
+        assert_eq!(result, Some(3.0));
+    }
+
+    #[test]
+    fn test_find_crossed_marker_empty() {
+        let result = find_crossed_marker(&[], 0.0, 5.0);
+        assert_eq!(result, None);
     }
 }
