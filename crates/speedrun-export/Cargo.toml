@@ -12,6 +12,8 @@ avt.workspace = true
 rgb.workspace = true
 fontdue = "0.9"
 image = { version = "0.25", default-features = false, features = ["png"] }
+gif = "0.13"
+color_quant = "1.1"
 
 [dev-dependencies]
 insta.workspace = true
