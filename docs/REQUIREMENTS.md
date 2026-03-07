@@ -731,19 +731,22 @@ These are explicitly **not** included in v1:
 
 These are natural extensions that the architecture supports but are deferred:
 
-### Phase 5 — Mouse support
+### Phase 5 — Marker authoring and auto-pause
+Add markers during playback with `m` (unlabeled) or `M` (labeled, with inline text prompt following the search input UX pattern). Markers are appended to the `.cast` file as standard asciicast marker events; a first-time `[y/N]` confirmation guards against unexpected file modification. New CLI flag `-m, --pause-at-markers` auto-pauses playback when a marker is crossed during `tick()` (not on seek/step). Virtual markers at start (0:00) and end (duration) are always-on boundaries for `[`/`]` navigation — `]` past the last marker jumps to end, `[` before the first jumps to start.
+
+### Phase 6 — Mouse support
 Click-to-seek on the progress bar, scroll wheel for speed control. Requires careful handling of tmux/screen mouse passthrough and terminal compatibility detection.
 
-### Phase 6 — Web player (WASM)
+### Phase 7 — Web player (WASM)
 Compile `speedrun-core` to WASM via `wasm-bindgen`. Build a JS/TS rendering layer using `<canvas>` with a web-native controls UI. Ship as an npm package and/or a `<speedrun-player>` web component. The core API is already WASM-friendly (no filesystem, no threads, caller provides `Read`).
 
-### Phase 7 — Text search
+### Phase 8 — Text search
 `/` to search for a string across the recording, jumping to timestamps where it appears on screen. Implementation: scan keyframe snapshots for matches first (fast), then narrow down between keyframes for precise timing.
 
-### Phase 8 — Export
+### Phase 9 — Export
 `speedrun export --format gif demo.cast` — render keyframe snapshots to animated GIF or MP4. Leverage the existing keyframe infrastructure for frame generation.
 
-### Phase 9 — Keyframe sidecar cache
+### Phase 10 — Keyframe sidecar cache
 Write pre-computed keyframes to `demo.cast.idx` for instant load on very long recordings. Versioned format so cache invalidation is automatic when the recording or speedrun version changes.
 
 ---
