@@ -2,6 +2,7 @@
 source: crates/speedrun/src/help.rs
 expression: output
 ---
+                                                            
           ┌──────────── Keybindings ────────────┐           
           │ Playback                            │           
           │   Space         Play / pause        │           
@@ -26,4 +27,7 @@ expression: output
           │ Display                             │           
           │   Tab           Toggle controls     │           
           │   ?             Toggle help         │           
+          │                                     │           
+          │ Application                         │           
+          │   q / Esc       Quit                │           
           └─────────────────────────────────────┘

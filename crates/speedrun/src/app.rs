@@ -1,6 +1,6 @@
 use crate::help::HelpOverlay;
 use crate::input::{Action, map_key_event};
-use crate::ui::{ControlsBar, TerminalView, ViewportState};
+use crate::ui::{ControlsBar, TerminalView, ViewportState, find_on_screen_matches};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::Frame;
 use ratatui::Terminal;
@@ -115,6 +115,23 @@ impl App {
             return false;
         }
         true
+    }
+
+    /// Adjust viewport scroll_y to center the given row vertically.
+    ///
+    /// This is called after n/N navigation to ensure the match row is visible
+    /// when the recording is taller than the host terminal.
+    fn scroll_to_match_row(&mut self, match_row: u16) {
+        let (_, rec_rows) = self.player.size();
+        // We don't have the current terminal height here, but we can estimate
+        // a reasonable viewport height. The viewport will be corrected on next
+        // render by follow_cursor, but we set scroll_y here for the match row.
+        // Use a conservative estimate — the viewport state will be refined on render.
+        let max_scroll = rec_rows.saturating_sub(1);
+        // Center the match row — try to put it in the middle of screen
+        // We'll use scroll_y directly; follow_cursor will refine on next render
+        let half_screen = 12u16; // reasonable estimate for half screen
+        self.viewport.scroll_y = match_row.saturating_sub(half_screen).min(max_scroll);
     }
 
     fn show_help(&mut self) {
@@ -314,6 +331,8 @@ impl App {
                     let epsilon = 0.001;
                     if let Some(hit) = self.player.search_forward(query, current + epsilon) {
                         self.player.seek(hit.time);
+                        // Scroll viewport to center the match row
+                        self.scroll_to_match_row(hit.row as u16);
                     } else {
                         self.no_match_feedback = Some(Instant::now());
                     }
@@ -326,6 +345,8 @@ impl App {
                     let epsilon = 0.001;
                     if let Some(hit) = self.player.search_backward(query, current - epsilon) {
                         self.player.seek(hit.time);
+                        // Scroll viewport to center the match row
+                        self.scroll_to_match_row(hit.row as u16);
                     } else {
                         self.no_match_feedback = Some(Instant::now());
                     }
@@ -504,8 +525,23 @@ impl App {
             area.height,
         );
 
+        // Compute on-screen matches for highlighting
+        let (screen_matches, current_match_idx) = if let Some(ref query) = self.search_query {
+            let lines: Vec<String> = self
+                .player
+                .screen()
+                .iter()
+                .map(|line| line.text())
+                .collect();
+            let matches = find_on_screen_matches(&lines, query);
+            (matches, self.current_match_index)
+        } else {
+            (Vec::new(), None)
+        };
+
         let view = TerminalView::new(self.player.screen(), cursor, (rec_cols, rec_rows))
-            .with_scroll(self.viewport.scroll_x, self.viewport.scroll_y);
+            .with_scroll(self.viewport.scroll_x, self.viewport.scroll_y)
+            .with_matches(screen_matches, current_match_idx);
 
         frame.render_widget(view, area);
 
@@ -520,6 +556,7 @@ impl App {
                 duration: self.player.duration(),
                 speed: self.player.speed(),
                 marker_times: self.player.markers().iter().map(|m| m.time).collect(),
+                search_query: self.search_query.clone(),
             };
             let controls_rect = Self::controls_rect(area, rec_cols, rec_rows);
             frame.render_widget(controls, controls_rect);

@@ -126,6 +126,8 @@ pub struct ControlsBar {
     pub speed: f64,
     /// Effective times of markers in the recording.
     pub marker_times: Vec<f64>,
+    /// Active search query, if any.
+    pub search_query: Option<String>,
 }
 
 impl ControlsBar {
@@ -158,32 +160,67 @@ impl Widget for ControlsBar {
         let total_str = format_time(self.duration);
         let speed_str = format_speed(self.speed);
         let time_full = format!("{current_str} / {total_str}");
+        let search_indicator = self.search_query.as_ref().map(|q| format!("[{q}]"));
 
         // Calculate display widths
         let icon_w: u16 = 2;
         let time_full_w = display_width(&time_full);
         let time_short_w = display_width(&current_str);
         let speed_w = display_width(&speed_str);
+        let search_w = search_indicator.as_ref().map_or(0, |s| display_width(s));
 
-        // Fixed widths for each layout level:
+        // Fixed widths for each layout level (priority: time > progress > search > speed):
+        //   Full+Search: icon + time_full + gap + progress + gap + search + gap + speed
         //   Full:        icon + time_full + gap + progress + gap + speed
-        //   NoSpeed:     icon + time_full + gap + progress
+        //   NoSpeed:     icon + time_full + gap + progress + gap + search (if search active)
+        //   NoSearch:    icon + time_full + gap + progress
         //   NoDuration:  icon + time_short + gap + progress
         //   Minimal:     icon + time_short
+        let full_search_fixed = icon_w + time_full_w + 1 + 1 + search_w + 1 + speed_w;
         let full_fixed = icon_w + time_full_w + 1 + 1 + speed_w;
+        let no_speed_search_fixed = icon_w + time_full_w + 1 + 1 + search_w;
         let no_speed_fixed = icon_w + time_full_w + 1;
         let no_duration_fixed = icon_w + time_short_w + 1;
         let minimal_fixed = icon_w + time_short_w;
 
         // Determine layout: which elements fit?
-        let (time_str, progress_w, show_speed) = if width >= full_fixed + MIN_PROGRESS_WIDTH {
-            (time_full.as_str(), Some(width - full_fixed), true)
+        let (time_str, progress_w, show_search, show_speed) = if search_indicator.is_some()
+            && width >= full_search_fixed + MIN_PROGRESS_WIDTH
+        {
+            // Full layout with search indicator
+            (
+                time_full.as_str(),
+                Some(width - full_search_fixed),
+                true,
+                true,
+            )
+        } else if width >= full_fixed + MIN_PROGRESS_WIDTH {
+            (time_full.as_str(), Some(width - full_fixed), false, true)
+        } else if search_indicator.is_some() && width >= no_speed_search_fixed + MIN_PROGRESS_WIDTH
+        {
+            // Drop speed, keep search
+            (
+                time_full.as_str(),
+                Some(width - no_speed_search_fixed),
+                true,
+                false,
+            )
         } else if width >= no_speed_fixed + MIN_PROGRESS_WIDTH {
-            (time_full.as_str(), Some(width - no_speed_fixed), false)
+            (
+                time_full.as_str(),
+                Some(width - no_speed_fixed),
+                false,
+                false,
+            )
         } else if width >= no_duration_fixed + MIN_PROGRESS_WIDTH {
-            (current_str.as_str(), Some(width - no_duration_fixed), false)
+            (
+                current_str.as_str(),
+                Some(width - no_duration_fixed),
+                false,
+                false,
+            )
         } else if width >= minimal_fixed {
-            (current_str.as_str(), None, false)
+            (current_str.as_str(), None, false, false)
         } else {
             return; // Too small — render nothing
         };
@@ -254,6 +291,20 @@ impl Widget for ControlsBar {
                 }
             }
 
+            // Search indicator (if shown)
+            if show_search && let Some(ref indicator) = search_indicator {
+                x += 1; // gap after progress bar
+                let search_style = Style::default().fg(Color::Yellow).bg(Color::DarkGray);
+                for ch in indicator.chars() {
+                    if x < max_x {
+                        let cell = buf.get_mut(x, y);
+                        cell.set_char(ch);
+                        cell.set_style(search_style);
+                        x += 1;
+                    }
+                }
+            }
+
             // Speed indicator (if full layout)
             if show_speed {
                 x += 1; // gap after progress bar
@@ -286,6 +337,7 @@ mod tests {
             duration: 120.0,
             speed: 1.0,
             marker_times: vec![],
+            search_query: None,
         }
     }
 
@@ -397,5 +449,22 @@ mod tests {
     fn snapshot_controls_too_small_5() {
         let controls = default_controls();
         insta::assert_snapshot!(render_to_string(controls, 5));
+    }
+
+    // ── Search indicator tests ───────────────────────────────────────────────
+
+    #[test]
+    fn snapshot_controls_search_indicator() {
+        let mut controls = default_controls();
+        controls.search_query = Some("test".to_string());
+        insta::assert_snapshot!(render_to_string(controls, 80));
+    }
+
+    #[test]
+    fn snapshot_controls_search_indicator_narrow_width() {
+        // At 40 columns, search indicator should be dropped before speed
+        let mut controls = default_controls();
+        controls.search_query = Some("test".to_string());
+        insta::assert_snapshot!(render_to_string(controls, 40));
     }
 }

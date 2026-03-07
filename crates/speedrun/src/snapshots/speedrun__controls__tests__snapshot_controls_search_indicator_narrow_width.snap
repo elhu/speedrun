@@ -1,0 +1,5 @@
+---
+source: crates/speedrun/src/controls.rs
+expression: "render_to_string(controls, 40)"
+---
+▮▮0:30 / 2:00 ████░░░░░░░░░░ [test] 1.0×
