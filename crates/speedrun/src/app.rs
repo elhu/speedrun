@@ -2636,4 +2636,180 @@ mod tests {
         ));
         assert_eq!(app.marker_label_input, "x");
     }
+
+    // ── Edge case hardening tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_m_ignored_during_help_overlay() {
+        let (mut app, _tmp) = make_marker_app("with_markers.cast");
+        app.file_modify_confirmed = true;
+        app.help_visible = true;
+        let markers_before = app.player.markers().len();
+
+        app.handle_action(Action::AddMarker);
+
+        // Help should still be visible, no marker created
+        assert!(app.help_visible);
+        assert_eq!(app.player.markers().len(), markers_before);
+    }
+
+    #[test]
+    fn test_m_during_search_appends_to_query() {
+        let player = load_player("with_markers.cast");
+        let mut app = App::new(
+            player,
+            true,
+            false,
+            Some(testdata_path("with_markers.cast")),
+        );
+        app.file_modify_confirmed = true;
+
+        // Enter SearchInput mode
+        app.handle_action(Action::StartSearch);
+        assert_eq!(app.input_mode, InputMode::SearchInput);
+        let markers_before = app.player.markers().len();
+
+        // Send 'm' key
+        app.handle_search_input(KeyEvent::new(
+            KeyCode::Char('m'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        // 'm' should be appended to search input, not create a marker
+        assert_eq!(app.search_input, "m");
+        assert_eq!(app.player.markers().len(), markers_before);
+    }
+
+    #[test]
+    fn test_m_during_label_input_appends_to_label() {
+        let (mut app, _tmp) = make_marker_app("with_markers.cast");
+        app.file_modify_confirmed = true;
+
+        // Enter MarkerLabelInput mode
+        app.handle_action(Action::AddLabeledMarker);
+        assert_eq!(app.input_mode, InputMode::MarkerLabelInput);
+        let markers_before = app.player.markers().len();
+
+        // Send 'm' key
+        app.handle_marker_label_input(KeyEvent::new(
+            KeyCode::Char('m'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        // 'm' should be appended to marker label, not create a second marker
+        assert_eq!(app.marker_label_input, "m");
+        assert_eq!(app.player.markers().len(), markers_before);
+    }
+
+    #[test]
+    fn test_controls_show_after_marker_with_no_controls() {
+        let (mut app, _tmp) = make_marker_app("with_markers.cast");
+        app.controls_manually_hidden = true;
+        app.file_modify_confirmed = true;
+        app.player.seek(5.0);
+
+        app.handle_action(Action::AddMarker);
+
+        // Controls should be forced visible after marker creation
+        assert!(app.controls_force_show);
+    }
+
+    #[test]
+    fn test_marker_while_paused() {
+        let (mut app, _tmp) = make_marker_app("with_markers.cast");
+        app.file_modify_confirmed = true;
+        app.player.seek(5.0);
+        assert!(!app.player.is_playing()); // paused
+        let markers_before = app.player.markers().len();
+
+        app.handle_action(Action::AddMarker);
+
+        // Marker should be created at current time
+        assert_eq!(app.player.markers().len(), markers_before + 1);
+        // Should still be paused
+        assert!(!app.player.is_playing());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_read_only_file_no_panic() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (mut app, tmp) = make_marker_app("with_markers.cast");
+        app.file_modify_confirmed = true;
+        app.player.seek(5.0);
+
+        // First marker should succeed
+        app.handle_action(Action::AddMarker);
+        assert!(app.marker_feedback.is_some());
+
+        // Make file read-only
+        let perms = std::fs::Permissions::from_mode(0o444);
+        std::fs::set_permissions(tmp.path(), perms).unwrap();
+
+        // Attempt another marker — should not panic
+        app.player.seek(6.0);
+        app.handle_action(Action::AddMarker);
+
+        // Should have an error feedback, not a panic
+        assert!(app.marker_error_feedback.is_some());
+    }
+
+    #[test]
+    fn test_round_trip_marker_persists_on_reload() {
+        // 1. Copy with_markers.cast to a temp file
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.cast");
+        std::fs::copy(testdata_path("with_markers.cast"), &path).unwrap();
+
+        // 2. Load player from temp file
+        let mut player = Player::load(std::fs::File::open(&path).unwrap()).unwrap();
+        let original_marker_count = player.markers().len(); // 2
+
+        // 3. Seek to a position and add a marker
+        player.seek(5.0);
+        let line = player.add_marker("round-trip-test".into()).unwrap();
+
+        // 4. Append to file (using same newline-safe logic as App::append_line_to_file)
+        {
+            use std::io::{Read, Seek, SeekFrom, Write};
+            let mut f = std::fs::OpenOptions::new()
+                .read(true)
+                .append(true)
+                .open(&path)
+                .unwrap();
+            let needs_newline = if f.seek(SeekFrom::End(-1)).is_ok() {
+                let mut byte = [0u8; 1];
+                f.read_exact(&mut byte).unwrap();
+                byte[0] != b'\n'
+            } else {
+                false
+            };
+            if needs_newline {
+                writeln!(f, "\n{line}").unwrap();
+            } else {
+                writeln!(f, "{line}").unwrap();
+            }
+        }
+
+        // 5. Reload from the same file
+        let player2 = Player::load(std::fs::File::open(&path).unwrap()).unwrap();
+
+        // 6. Verify marker count increased
+        assert_eq!(player2.markers().len(), original_marker_count + 1);
+
+        // 7. Verify new marker has correct label
+        let new_marker = player2
+            .markers()
+            .iter()
+            .find(|m| m.label == "round-trip-test")
+            .unwrap();
+
+        // 8. Verify effective time is close to 5.0 (within float tolerance)
+        assert!(
+            (new_marker.time - 5.0).abs() < 0.01,
+            "Expected marker time near 5.0, got {}",
+            new_marker.time
+        );
+    }
 }

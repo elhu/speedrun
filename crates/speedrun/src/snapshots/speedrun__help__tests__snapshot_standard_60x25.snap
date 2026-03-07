@@ -18,12 +18,12 @@ expression: output
       │                                             │       
       │ Markers                                     │       
       │   ] [           Next / prev marker          │       
+      │   m             Add marker                  │       
+      │   M             Add labeled marker          │       
       │   -m            Auto-pause at markers (CLI) │       
       │                                             │       
       │ Search                                      │       
       │   /             Search                      │       
       │   n             Next match                  │       
       │   N             Previous match              │       
-      │   Esc           Clear search                │       
-      │                                             │       
       └─────────────────────────────────────────────┘

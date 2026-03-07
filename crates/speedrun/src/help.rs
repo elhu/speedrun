@@ -40,6 +40,8 @@ const KEYBINDING_GROUPS: &[KeybindingGroup] = &[
         title: "Markers",
         bindings: &[
             ("] [", "Next / prev marker"),
+            ("m", "Add marker"),
+            ("M", "Add labeled marker"),
             ("-m", "Auto-pause at markers (CLI)"),
         ],
     },
@@ -246,8 +248,8 @@ mod tests {
     #[test]
     fn overlay_dimensions() {
         let (w, h) = HelpOverlay::overlay_size();
-        // 6 groups + 18 bindings + 5 blank lines = 29 content lines + 2 border = 31
-        assert_eq!(h, 31);
+        // 6 groups + 20 bindings + 5 blank lines = 31 content lines + 2 border = 33
+        assert_eq!(h, 33);
         // Widest line: 2 + 12 + 2 + 27 = 43 content + 4 (border+padding) = 47
         assert_eq!(w, 47);
     }
@@ -262,8 +264,8 @@ mod tests {
     #[test]
     fn content_height_sums_correctly() {
         let h = HelpOverlay::content_height();
-        // 6 titles + 18 bindings + 5 blanks = 29
-        assert_eq!(h, 29);
+        // 6 titles + 20 bindings + 5 blanks = 31
+        assert_eq!(h, 31);
     }
 
     // ── Centering tests ──────────────────────────────────────────────────────
@@ -273,11 +275,11 @@ mod tests {
         let area = Rect::new(0, 0, 80, 40);
         let rect = HelpOverlay::centered_rect(area);
         assert_eq!(rect.width, 47);
-        assert_eq!(rect.height, 31);
+        assert_eq!(rect.height, 33);
         // Horizontal: (80 - 47) / 2 = 16
         assert_eq!(rect.x, 16);
-        // Vertical: (40 - 31) / 2 = 4
-        assert_eq!(rect.y, 4);
+        // Vertical: (40 - 33) / 2 = 3
+        assert_eq!(rect.y, 3);
     }
 
     #[test]
@@ -285,9 +287,9 @@ mod tests {
         let area = Rect::new(0, 0, 120, 50);
         let rect = HelpOverlay::centered_rect(area);
         assert_eq!(rect.width, 47);
-        assert_eq!(rect.height, 31);
+        assert_eq!(rect.height, 33);
         assert_eq!(rect.x, 36); // (120 - 47) / 2 = 36
-        assert_eq!(rect.y, 9); // (50 - 31) / 2 = 9
+        assert_eq!(rect.y, 8); // (50 - 33) / 2 = 8
     }
 
     #[test]
@@ -305,9 +307,9 @@ mod tests {
         let area = Rect::new(5, 3, 80, 40);
         let rect = HelpOverlay::centered_rect(area);
         assert_eq!(rect.width, 47);
-        assert_eq!(rect.height, 31);
+        assert_eq!(rect.height, 33);
         assert_eq!(rect.x, 21); // 5 + (80 - 47) / 2
-        assert_eq!(rect.y, 7); // 3 + (40 - 31) / 2
+        assert_eq!(rect.y, 6); // 3 + (40 - 33) / 2
     }
 
     // ── Graceful degradation tests ───────────────────────────────────────────

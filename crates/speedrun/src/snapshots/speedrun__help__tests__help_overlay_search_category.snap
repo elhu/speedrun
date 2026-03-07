@@ -18,6 +18,8 @@ expression: output
       │                                             │       
       │ Markers                                     │       
       │   ] [           Next / prev marker          │       
+      │   m             Add marker                  │       
+      │   M             Add labeled marker          │       
       │   -m            Auto-pause at markers (CLI) │       
       │                                             │       
       │ Search                                      │       
@@ -29,6 +31,4 @@ expression: output
       │ Display                                     │       
       │   Tab           Toggle controls             │       
       │   ?             Toggle help                 │       
-      │                                             │       
-      │ Application                                 │       
       └─────────────────────────────────────────────┘
