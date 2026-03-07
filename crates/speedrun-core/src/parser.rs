@@ -612,6 +612,25 @@ pub fn parse(reader: impl std::io::Read) -> Result<Recording, ParseError> {
     })
 }
 
+/// Serialize a marker event as an asciicast v2 NDJSON line.
+///
+/// Returns a string like `[3.0,"m","chapter-1"]`. The caller is responsible
+/// for appending a newline and writing to the file.
+///
+/// # Examples
+///
+/// ```
+/// use speedrun_core::serialize_marker_event;
+///
+/// let line = serialize_marker_event(3.0, "chapter-1");
+/// assert_eq!(line, r#"[3.0,"m","chapter-1"]"#);
+/// ```
+pub fn serialize_marker_event(raw_time: f64, label: &str) -> String {
+    // Round to 6 decimal places to avoid floating-point noise
+    let rounded = (raw_time * 1_000_000.0).round() / 1_000_000.0;
+    serde_json::to_string(&(rounded, "m", label)).expect("marker tuple serialization cannot fail")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1282,5 +1301,44 @@ mod tests {
                 recording.events[i].time
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // serialize_marker_event() tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_serialize_marker_basic() {
+        let line = serialize_marker_event(3.0, "chapter-1");
+        assert_eq!(line, r#"[3.0,"m","chapter-1"]"#);
+    }
+
+    #[test]
+    fn test_serialize_marker_empty_label() {
+        let line = serialize_marker_event(1.5, "");
+        assert_eq!(line, r#"[1.5,"m",""]"#);
+    }
+
+    #[test]
+    fn test_serialize_marker_special_chars() {
+        // Labels with quotes and backslashes should be JSON-escaped.
+        let line = serialize_marker_event(2.0, r#"test"quote"#);
+        assert_eq!(line, r#"[2.0,"m","test\"quote"]"#);
+
+        let line = serialize_marker_event(2.0, r"back\slash");
+        assert_eq!(line, r#"[2.0,"m","back\\slash"]"#);
+    }
+
+    #[test]
+    fn test_serialize_marker_unicode() {
+        let line = serialize_marker_event(1.0, "héllo wörld");
+        assert_eq!(line, r#"[1.0,"m","héllo wörld"]"#);
+    }
+
+    #[test]
+    fn test_serialize_marker_float_noise_rounding() {
+        // 3.5000000000000004 should round to 3.5
+        let line = serialize_marker_event(3.5000000000000004, "x");
+        assert_eq!(line, r#"[3.5,"m","x"]"#);
     }
 }

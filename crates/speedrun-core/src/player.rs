@@ -312,6 +312,34 @@ impl Player {
         &self.warnings
     }
 
+    /// Asciicast format version of the loaded recording (2 or 3).
+    pub fn version(&self) -> u8 {
+        self.recording.header.version
+    }
+
+    // -----------------------------------------------------------------------
+    // Marker authoring
+    // -----------------------------------------------------------------------
+
+    /// Create a marker at the current playback position.
+    ///
+    /// Inserts the marker into the in-memory marker list (sorted by time)
+    /// and returns the serialized NDJSON line for the caller to write to the
+    /// `.cast` file. Returns `None` if the current time cannot be mapped
+    /// back to a raw timestamp.
+    pub fn add_marker(&mut self, label: String) -> Option<String> {
+        let effective = self.current_time;
+        let raw = self.time_map.raw_time(effective)?;
+        let line = crate::parser::serialize_marker_event(raw, &label);
+        let marker = Marker {
+            time: effective,
+            label,
+        };
+        let pos = self.markers.partition_point(|m| m.time <= effective);
+        self.markers.insert(pos, marker);
+        Some(line)
+    }
+
     // -----------------------------------------------------------------------
     // Playback state control
     // -----------------------------------------------------------------------
@@ -1412,6 +1440,149 @@ mod tests {
         let mut player = load_file("minimal_v2.cast");
         player.set_speed(4.0);
         assert_f64_eq(player.speed(), 4.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // add_marker() and version() tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn add_marker_inserts_at_current_time() {
+        let mut player = load_file("minimal_v2.cast");
+        player.seek(1.0);
+
+        let result = player.add_marker("test".into());
+        assert!(result.is_some(), "add_marker should return Some");
+
+        let markers = player.markers();
+        assert!(
+            markers.iter().any(|m| m.label == "test"),
+            "marker with label 'test' should be in markers()"
+        );
+        let added = markers.iter().find(|m| m.label == "test").unwrap();
+        assert!(
+            (added.time - 1.0).abs() < EPSILON,
+            "marker time should be 1.0, got {}",
+            added.time
+        );
+    }
+
+    #[test]
+    fn add_marker_returns_valid_ndjson() {
+        let mut player = load_file("minimal_v2.cast");
+        player.seek(1.5);
+
+        let line = player.add_marker("my-chapter".into()).unwrap();
+        // Should be a valid JSON array: [<number>,"m","my-chapter"]
+        let val: serde_json::Value =
+            serde_json::from_str(&line).expect("NDJSON line should be valid JSON");
+        let arr = val.as_array().expect("should be a JSON array");
+        assert_eq!(arr.len(), 3, "array should have 3 elements");
+        assert!(
+            arr[0].as_f64().is_some(),
+            "first element should be a number"
+        );
+        assert_eq!(arr[1].as_str(), Some("m"), "second element should be 'm'");
+        assert_eq!(
+            arr[2].as_str(),
+            Some("my-chapter"),
+            "third element should be the label"
+        );
+    }
+
+    #[test]
+    fn add_marker_sorted_order() {
+        let mut player = load_file("minimal_v2.cast");
+
+        // Add markers out of time order
+        player.seek(1.5);
+        player.add_marker("middle".into());
+
+        player.seek(0.3);
+        player.add_marker("start".into());
+
+        player.seek(2.0);
+        player.add_marker("end".into());
+
+        let markers = player.markers();
+        // Markers should be sorted by time
+        let times: Vec<f64> = markers.iter().map(|m| m.time).collect();
+        for i in 1..times.len() {
+            assert!(
+                times[i - 1] <= times[i],
+                "markers not in sorted order at index {i}: {} > {}",
+                times[i - 1],
+                times[i]
+            );
+        }
+    }
+
+    #[test]
+    fn add_marker_multiple_sorted() {
+        let data = b"{\"version\":2,\"width\":80,\"height\":24}\n[0.5,\"o\",\"a\"]\n[1.0,\"o\",\"b\"]\n[2.0,\"o\",\"c\"]";
+        let mut player = Player::load(&data[..]).unwrap();
+
+        player.seek(1.0);
+        player.add_marker("first".into());
+
+        player.seek(0.5);
+        player.add_marker("second".into());
+
+        player.seek(2.0);
+        player.add_marker("third".into());
+
+        let markers = player.markers();
+        // All 3 markers should be present
+        assert_eq!(markers.len(), 3);
+        // Should be sorted
+        assert!(markers[0].time <= markers[1].time);
+        assert!(markers[1].time <= markers[2].time);
+    }
+
+    #[test]
+    fn add_marker_ndjson_raw_time_with_idle_limit() {
+        // With idle limit, effective → raw should give back the original raw time.
+        // long_idle.cast: raw times [1.0, 1.1, 35.0, 35.1, 36.0], idle_limit 2.0
+        // effective times: [1.0, 1.1, 3.1, 3.2, 4.1]
+        // At effective=3.1, raw_time = 35.0 + (3.1 - 3.1) = 35.0
+        let mut player = load_file("long_idle.cast");
+        player.seek(3.1);
+        let line = player.add_marker("at-idle".into()).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let arr = val.as_array().unwrap();
+        let raw = arr[0].as_f64().unwrap();
+        // raw_time(3.1) = raw_times[2] + (3.1 - effective_times[2]) = 35.0 + 0 = 35.0
+        assert!(
+            (raw - 35.0).abs() < 1e-5,
+            "expected raw time ~35.0, got {raw}"
+        );
+    }
+
+    #[test]
+    fn version_returns_correct_version() {
+        let player_v2 = load_file("minimal_v2.cast");
+        assert_eq!(player_v2.version(), 2);
+
+        let player_v3 = load_file("minimal_v3.cast");
+        assert_eq!(player_v3.version(), 3);
+    }
+
+    #[test]
+    fn add_marker_navigation_finds_new_marker() {
+        // After add_marker, the marker must be visible via markers()
+        // and sorted correctly so bracket navigation would find it.
+        let data = b"{\"version\":2,\"width\":80,\"height\":24}\n[1.0,\"o\",\"a\"]\n[3.0,\"m\",\"existing\"]\n[5.0,\"o\",\"b\"]";
+        let mut player = Player::load(&data[..]).unwrap();
+
+        player.seek(2.0);
+        player.add_marker("new-marker".into());
+
+        let markers = player.markers();
+        // Should have 2 markers now: new-marker at ~2.0, existing at 3.0
+        assert_eq!(markers.len(), 2);
+        // Sorted order: new-marker before existing
+        assert_eq!(markers[0].label, "new-marker");
+        assert_eq!(markers[1].label, "existing");
     }
 
     // -----------------------------------------------------------------------
