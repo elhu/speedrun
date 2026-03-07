@@ -199,10 +199,9 @@ mod tests {
 
         // Snapshot should be an empty terminal (no events replayed yet)
         let restored = kf.snapshot.restore();
-        let view = restored.view();
         for row in 0..24 {
             assert_eq!(
-                view[row].text().trim(),
+                restored.line(row).text().trim(),
                 "",
                 "row {row} should be blank in initial keyframe"
             );

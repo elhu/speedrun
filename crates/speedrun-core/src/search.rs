@@ -36,7 +36,7 @@ fn feed_event(vt: &mut avt::Vt, event: &crate::parser::Event) {
             let _ = vt.feed_str(data);
         }
         (EventType::Resize, EventData::Resize { cols, rows }) => {
-            let _ = vt.feed_str(&format!("\x1b[8;{rows};{cols}t"));
+            let _ = vt.resize(*cols as usize, *rows as usize);
         }
         // Input and Marker events don't affect terminal state
         (EventType::Input, _) | (EventType::Marker, _) => {}
@@ -47,8 +47,7 @@ fn feed_event(vt: &mut avt::Vt, event: &crate::parser::Event) {
 /// Scan all lines of the virtual terminal for a case-insensitive substring match.
 /// Returns the first match found (top-to-bottom, left-to-right).
 fn scan_screen(vt: &avt::Vt, query_lower: &str, time: f64) -> Option<SearchHit> {
-    let view = vt.view();
-    for (row_idx, line) in view.iter().enumerate() {
+    for (row_idx, line) in vt.view().enumerate() {
         let text = line.text();
         let text_lower = text.to_lowercase();
         if let Some(char_idx) = text_lower.find(query_lower) {
@@ -71,9 +70,8 @@ fn scan_screen(vt: &avt::Vt, query_lower: &str, time: f64) -> Option<SearchHit> 
 /// Scan all lines for the LAST match (bottom-to-top, right-to-left).
 /// Used for backward search to find the latest match in a keyframe interval.
 fn scan_screen_last(vt: &avt::Vt, query_lower: &str, time: f64) -> Option<SearchHit> {
-    let view = vt.view();
     let mut last_hit: Option<SearchHit> = None;
-    for (row_idx, line) in view.iter().enumerate() {
+    for (row_idx, line) in vt.view().enumerate() {
         let text = line.text();
         let text_lower = text.to_lowercase();
         // Find all occurrences, keep the last one on this line
@@ -112,7 +110,8 @@ fn char_index_to_col(line: &avt::Line, byte_idx: usize) -> usize {
     if byte_idx >= text.len() {
         // Count total columns from cells
         let mut total_cols = 0;
-        for (ch, _pen) in line.cells() {
+        for cell in line.cells() {
+            let ch = cell.char();
             total_cols += if ch == ' ' || ch.is_ascii() {
                 1
             } else {
@@ -126,10 +125,11 @@ fn char_index_to_col(line: &avt::Line, byte_idx: usize) -> usize {
     let mut current_byte = 0;
     let mut current_col = 0;
 
-    for (ch, _pen) in line.cells() {
+    for cell in line.cells() {
         if current_byte >= byte_idx {
             break;
         }
+        let ch = cell.char();
         let char_len = ch.len_utf8();
         let col_width = if ch == ' ' || ch.is_ascii() {
             1

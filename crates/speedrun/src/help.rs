@@ -169,7 +169,7 @@ impl Widget for HelpOverlay {
         let bg_style = Style::default().bg(Color::Black).fg(Color::White);
         for y in overlay_rect.y..overlay_rect.y + overlay_rect.height {
             for x in overlay_rect.x..overlay_rect.x + overlay_rect.width {
-                buf.get_mut(x, y).set_style(bg_style);
+                buf[(x, y)].set_style(bg_style);
             }
         }
 
@@ -214,7 +214,7 @@ mod tests {
         let mut output = String::new();
         for y in 0..height {
             for x in 0..width {
-                output.push_str(buf.get(x, y).symbol());
+                output.push_str(buf[(x, y)].symbol());
             }
             if y < height - 1 {
                 output.push('\n');
@@ -321,7 +321,7 @@ mod tests {
         // Fill with 'X' to verify nothing is overwritten
         for y in 0..4 {
             for x in 0..8 {
-                buf.get_mut(x, y).set_char('X');
+                buf[(x, y)].set_char('X');
             }
         }
         HelpOverlay.render(area, &mut buf);
@@ -329,7 +329,7 @@ mod tests {
         for y in 0..4u16 {
             for x in 0..8u16 {
                 assert_eq!(
-                    buf.get(x, y).symbol(),
+                    buf[(x, y)].symbol(),
                     "X",
                     "cell ({x}, {y}) should be unchanged"
                 );
@@ -343,11 +343,11 @@ mod tests {
         let mut buf = Buffer::empty(area);
         for y in 0..20 {
             for x in 0..9 {
-                buf.get_mut(x, y).set_char('X');
+                buf[(x, y)].set_char('X');
             }
         }
         HelpOverlay.render(area, &mut buf);
-        assert_eq!(buf.get(0, 0).symbol(), "X");
+        assert_eq!(buf[(0, 0)].symbol(), "X");
     }
 
     #[test]
@@ -356,11 +356,11 @@ mod tests {
         let mut buf = Buffer::empty(area);
         for y in 0..4 {
             for x in 0..60 {
-                buf.get_mut(x, y).set_char('X');
+                buf[(x, y)].set_char('X');
             }
         }
         HelpOverlay.render(area, &mut buf);
-        assert_eq!(buf.get(0, 0).symbol(), "X");
+        assert_eq!(buf[(0, 0)].symbol(), "X");
     }
 
     // ── Search category test ─────────────────────────────────────────────────

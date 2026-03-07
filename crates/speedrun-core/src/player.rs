@@ -277,8 +277,8 @@ impl Player {
     // -----------------------------------------------------------------------
 
     /// Current terminal screen content.
-    pub fn screen(&self) -> &[avt::Line] {
-        self.vt.view()
+    pub fn screen(&self) -> Vec<avt::Line> {
+        self.vt.view().cloned().collect()
     }
 
     /// Current cursor state.

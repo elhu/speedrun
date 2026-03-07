@@ -199,7 +199,7 @@ impl Widget for TerminalView<'_> {
 
             let line = &self.lines[line_idx];
 
-            for (col_idx, (ch, pen)) in line.cells().enumerate() {
+            for (col_idx, avt_cell) in line.cells().iter().enumerate() {
                 let src_col = col_idx as u16;
                 if src_col < self.scroll_x {
                     continue;
@@ -209,11 +209,12 @@ impl Widget for TerminalView<'_> {
                     break;
                 }
 
-                let cell = buf.get_mut(area.x + dst_col, area.y + row);
-                cell.set_char(ch);
+                let pen = avt_cell.pen();
+                let cell = &mut buf[(area.x + dst_col, area.y + row)];
+                cell.set_char(avt_cell.char());
                 cell.set_fg(map_color(pen.foreground()));
                 cell.set_bg(map_color(pen.background()));
-                cell.modifier = map_modifiers(&pen);
+                cell.modifier = map_modifiers(pen);
             }
         }
 
@@ -225,8 +226,7 @@ impl Widget for TerminalView<'_> {
                 && cx < render_cols
                 && cy < render_rows
             {
-                let cell = buf.get_mut(area.x + cx, area.y + cy);
-                cell.modifier |= Modifier::REVERSED;
+                buf[(area.x + cx, area.y + cy)].modifier |= Modifier::REVERSED;
             }
         }
 
@@ -248,7 +248,7 @@ impl Widget for TerminalView<'_> {
                     continue;
                 }
 
-                let cell = buf.get_mut(area.x + dst_col, area.y + dst_row);
+                let cell = &mut buf[(area.x + dst_col, area.y + dst_row)];
                 if is_current {
                     // Current match: yellow background, black foreground
                     cell.set_bg(Color::Indexed(11));
@@ -309,9 +309,9 @@ mod tests {
         let mut vt = speedrun_core::create_vt(10, 1);
         // Italic(3), Underline(4), Blink(5), Inverse(7), Strikethrough(9)
         vt.feed_str("\x1b[3;4;5;7;9mX");
-        let line = &vt.view()[0];
-        let (_, pen) = line.cells().next().unwrap();
-        let mods = map_modifiers(&pen);
+        let line = vt.line(0);
+        let pen = line.cells()[0].pen();
+        let mods = map_modifiers(pen);
         assert!(mods.contains(Modifier::ITALIC));
         assert!(mods.contains(Modifier::UNDERLINED));
         assert!(mods.contains(Modifier::SLOW_BLINK));
@@ -321,14 +321,14 @@ mod tests {
         // Test bold separately (bold and faint are mutually exclusive in avt's intensity enum)
         let mut vt2 = speedrun_core::create_vt(10, 1);
         vt2.feed_str("\x1b[1mX");
-        let (_, pen2) = vt2.view()[0].cells().next().unwrap();
-        assert!(map_modifiers(&pen2).contains(Modifier::BOLD));
+        let pen2 = vt2.line(0).cells()[0].pen();
+        assert!(map_modifiers(pen2).contains(Modifier::BOLD));
 
         // Test faint
         let mut vt3 = speedrun_core::create_vt(10, 1);
         vt3.feed_str("\x1b[2mX");
-        let (_, pen3) = vt3.view()[0].cells().next().unwrap();
-        assert!(map_modifiers(&pen3).contains(Modifier::DIM));
+        let pen3 = vt3.line(0).cells()[0].pen();
+        assert!(map_modifiers(pen3).contains(Modifier::DIM));
     }
 
     // ── Cursor rendering tests ───────────────────────────────────────────────
@@ -342,14 +342,15 @@ mod tests {
             row: 0,
             visible: true,
         };
-        let view = TerminalView::new(vt.view(), cursor, (5, 1));
+        let lines: Vec<avt::Line> = vt.view().cloned().collect();
+        let view = TerminalView::new(&lines, cursor, (5, 1));
 
         let area = Rect::new(0, 0, 5, 1);
         let mut buf = Buffer::empty(area);
         view.render(area, &mut buf);
 
-        assert!(buf.get(2, 0).modifier.contains(Modifier::REVERSED));
-        assert!(!buf.get(0, 0).modifier.contains(Modifier::REVERSED));
+        assert!(buf[(2, 0)].modifier.contains(Modifier::REVERSED));
+        assert!(!buf[(0, 0)].modifier.contains(Modifier::REVERSED));
     }
 
     #[test]
@@ -361,13 +362,14 @@ mod tests {
             row: 0,
             visible: false,
         };
-        let view = TerminalView::new(vt.view(), cursor, (5, 1));
+        let lines: Vec<avt::Line> = vt.view().cloned().collect();
+        let view = TerminalView::new(&lines, cursor, (5, 1));
 
         let area = Rect::new(0, 0, 5, 1);
         let mut buf = Buffer::empty(area);
         view.render(area, &mut buf);
 
-        assert!(!buf.get(2, 0).modifier.contains(Modifier::REVERSED));
+        assert!(!buf[(2, 0)].modifier.contains(Modifier::REVERSED));
     }
 
     // ── Viewport scroll offset tests ─────────────────────────────────────────
@@ -450,7 +452,8 @@ mod tests {
         player.seek(player.duration());
 
         let (cols, rows) = player.size();
-        let view = TerminalView::new(player.screen(), player.cursor(), (cols, rows));
+        let lines = player.screen();
+        let view = TerminalView::new(&lines, player.cursor(), (cols, rows));
 
         let area = Rect::new(0, 0, cols, rows);
         let mut buf = Buffer::empty(area);
@@ -459,7 +462,7 @@ mod tests {
         let text_lines: Vec<String> = (0..rows)
             .map(|y| {
                 (0..cols)
-                    .map(|x| buf.get(x, y).symbol().to_string())
+                    .map(|x| buf[(x, y)].symbol().to_string())
                     .collect()
             })
             .collect();

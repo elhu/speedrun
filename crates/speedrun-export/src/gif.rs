@@ -205,7 +205,8 @@ pub fn export_gif(
         };
 
         player.seek(time);
-        let current = renderer.render_frame(player.screen(), &player.cursor(), w, h);
+        let screen = player.screen();
+        let current = renderer.render_frame(&screen, &player.cursor(), w, h);
 
         // Apply frame diffing: transparent color index = 0 in a palette of
         // [transparent_marker, ...actual_colors...]

@@ -143,24 +143,21 @@ mod tests {
     fn bold_pen_with_fg(index: u8) -> Pen {
         let mut vt = avt::Vt::new(10, 1);
         vt.feed_str(&format!("\x1b[1;38;5;{index}m "));
-        let line = &vt.view()[0];
-        line.cells().next().unwrap().1
+        *vt.line(0).cells()[0].pen()
     }
 
     /// Helper: create an inverse Pen with foreground and background.
     fn inverse_pen_with_fg_bg(fg_index: u8, bg_index: u8) -> Pen {
         let mut vt = avt::Vt::new(10, 1);
         vt.feed_str(&format!("\x1b[7;38;5;{fg_index};48;5;{bg_index}m "));
-        let line = &vt.view()[0];
-        line.cells().next().unwrap().1
+        *vt.line(0).cells()[0].pen()
     }
 
     /// Helper: create a default inverse Pen (no explicit fg/bg).
     fn inverse_pen_default() -> Pen {
         let mut vt = avt::Vt::new(10, 1);
         vt.feed_str("\x1b[7m ");
-        let line = &vt.view()[0];
-        line.cells().next().unwrap().1
+        *vt.line(0).cells()[0].pen()
     }
 
     // ---- Standard color table tests ----

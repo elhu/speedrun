@@ -195,25 +195,26 @@ impl ScreenRenderer {
         for (row_idx, line) in screen.iter().enumerate().take(height as usize) {
             let mut col_offset: usize = 0;
 
-            for seg in line.segments() {
-                let (fg, bg_color) = self.resolve_segment_colors(&seg);
+            for chunk in line.chunks(|c1, c2| c1.pen() != c2.pen()) {
+                let pen = chunk[0].pen();
+                let (fg, bg_color) = self.resolve_pen_colors(pen);
                 let bg_rgba_seg = Rgba([bg_color.r, bg_color.g, bg_color.b, 255]);
                 let fg_rgba = Rgba([fg.r, fg.g, fg.b, 255]);
 
-                let char_w = seg.char_width();
-                let text = seg.text();
-
                 // Select font based on bold attribute
-                let font = if seg.is_bold() {
+                let font = if pen.is_bold() {
                     &self.bold_font
                 } else {
                     &self.font
                 };
 
-                for ch in text.chars() {
+                for cell in &chunk {
                     if col_offset >= width as usize {
                         break;
                     }
+
+                    let ch = cell.char();
+                    let char_w = cell.width();
 
                     let cell_col = col_offset as u32;
                     let cell_row = row_idx as u32;
@@ -278,13 +279,13 @@ impl ScreenRenderer {
     }
 
     /// Resolve foreground and background colors for a segment.
-    fn resolve_segment_colors(&self, seg: &avt::Segment) -> (rgb::RGB8, rgb::RGB8) {
+    fn resolve_pen_colors(&self, pen: &avt::Pen) -> (rgb::RGB8, rgb::RGB8) {
         use avt::Color;
 
-        let fg_color: Option<Color> = seg.foreground();
-        let bg_color: Option<Color> = seg.background();
-        let is_bold = seg.is_bold();
-        let is_inverse = seg.is_inverse();
+        let fg_color: Option<Color> = pen.foreground();
+        let bg_color: Option<Color> = pen.background();
+        let is_bold = pen.is_bold();
+        let is_inverse = pen.is_inverse();
 
         let fg = match fg_color {
             Some(color) => {
@@ -444,6 +445,10 @@ mod tests {
         vt
     }
 
+    fn view_lines(vt: &avt::Vt) -> Vec<avt::Line> {
+        vt.view().cloned().collect()
+    }
+
     /// Sample all pixels in a specific cell.
     fn sample_cell_pixels(
         img: &RgbaImage,
@@ -482,7 +487,7 @@ mod tests {
         let renderer = default_renderer(1);
         let vt = make_test_screen("", 80, 24);
         let cursor = default_cursor();
-        let img = renderer.render_frame(vt.view(), &cursor, 80, 24);
+        let img = renderer.render_frame(&view_lines(&vt), &cursor, 80, 24);
         assert_eq!(img.width(), 80 * renderer.cell_width);
         assert_eq!(img.height(), 24 * renderer.cell_height);
     }
@@ -496,7 +501,7 @@ mod tests {
         let renderer = default_renderer(2);
         let vt = make_test_screen("", 80, 24);
         let cursor = default_cursor();
-        let img = renderer.render_frame(vt.view(), &cursor, 80, 24);
+        let img = renderer.render_frame(&view_lines(&vt), &cursor, 80, 24);
         assert_eq!(img.width(), 80 * renderer.cell_width);
         assert_eq!(img.height(), 24 * renderer.cell_height);
     }
@@ -510,7 +515,7 @@ mod tests {
         let renderer = default_renderer(1);
         let vt = make_test_screen("", 10, 3);
         let cursor = default_cursor();
-        let img = renderer.render_frame(vt.view(), &cursor, 10, 3);
+        let img = renderer.render_frame(&view_lines(&vt), &cursor, 10, 3);
         assert_eq!(img.width(), 10 * renderer.cell_width);
         assert_eq!(img.height(), 3 * renderer.cell_height);
     }
@@ -524,7 +529,7 @@ mod tests {
         let renderer = default_renderer(1);
         let vt = make_test_screen("hello", 80, 24);
         let cursor = default_cursor();
-        let img = renderer.render_frame(vt.view(), &cursor, 80, 24);
+        let img = renderer.render_frame(&view_lines(&vt), &cursor, 80, 24);
 
         // Sample pixels across the first 5 cells (where "hello" should be)
         let bg = ExportOptions::default().default_bg;
@@ -551,7 +556,7 @@ mod tests {
         let renderer = default_renderer(1);
         let vt = make_test_screen("", 80, 24);
         let cursor = default_cursor();
-        let img = renderer.render_frame(vt.view(), &cursor, 80, 24);
+        let img = renderer.render_frame(&view_lines(&vt), &cursor, 80, 24);
 
         let bg = ExportOptions::default().default_bg;
         let bg_pixel = Rgba([bg.r, bg.g, bg.b, 255]);
@@ -570,7 +575,7 @@ mod tests {
         // \x1b[31m = red (index 1 = RGB(205, 0, 0))
         let vt = make_test_screen("\x1b[31mX", 80, 24);
         let cursor = default_cursor();
-        let img = renderer.render_frame(vt.view(), &cursor, 80, 24);
+        let img = renderer.render_frame(&view_lines(&vt), &cursor, 80, 24);
 
         // The glyph pixels for "X" should include red-ish pixels
         let cell_pixels = sample_cell_pixels(&img, 0, 0, renderer.cell_width, renderer.cell_height);
@@ -594,7 +599,7 @@ mod tests {
         // \x1b[42m = green background (index 2 = RGB(0, 205, 0))
         let vt = make_test_screen("\x1b[42m ", 80, 24);
         let cursor = default_cursor();
-        let img = renderer.render_frame(vt.view(), &cursor, 80, 24);
+        let img = renderer.render_frame(&view_lines(&vt), &cursor, 80, 24);
 
         let cell_pixels = sample_cell_pixels(&img, 0, 0, renderer.cell_width, renderer.cell_height);
         // All pixels in cell (0,0) should be green background (space = no glyph)
@@ -620,7 +625,7 @@ mod tests {
         let content = "\u{F8FF}"; // Apple logo / private use area
         let vt = make_test_screen(content, 80, 24);
         let cursor = default_cursor();
-        let img = renderer.render_frame(vt.view(), &cursor, 80, 24);
+        let img = renderer.render_frame(&view_lines(&vt), &cursor, 80, 24);
 
         let bg = ExportOptions::default().default_bg;
         let bg_pixel = Rgba([bg.r, bg.g, bg.b, 255]);
@@ -657,8 +662,8 @@ mod tests {
             visible: false,
         };
 
-        let img_on = renderer.render_frame(vt.view(), &cursor_on, w, h);
-        let img_off = renderer.render_frame(vt.view(), &cursor_off, w, h);
+        let img_on = renderer.render_frame(&view_lines(&vt), &cursor_on, w, h);
+        let img_off = renderer.render_frame(&view_lines(&vt), &cursor_off, w, h);
 
         // Pixels at cursor position should differ
         let pixels_on =
@@ -753,8 +758,8 @@ mod tests {
         let vt_bold = make_test_screen("\x1b[1mA", w, h);
         let vt_regular = make_test_screen("A", w, h);
 
-        let img_bold = renderer.render_frame(vt_bold.view(), &cursor, w, h);
-        let img_regular = renderer.render_frame(vt_regular.view(), &cursor, w, h);
+        let img_bold = renderer.render_frame(&view_lines(&vt_bold), &cursor, w, h);
+        let img_regular = renderer.render_frame(&view_lines(&vt_regular), &cursor, w, h);
 
         let pixels_bold =
             sample_cell_pixels(&img_bold, 0, 0, renderer.cell_width, renderer.cell_height);
@@ -816,7 +821,7 @@ mod tests {
 
         // Render bold text — should not panic
         let vt = make_test_screen("\x1b[1mHello World", w, h);
-        let img = renderer.render_frame(vt.view(), &cursor, w, h);
+        let img = renderer.render_frame(&view_lines(&vt), &cursor, w, h);
 
         // Image dimensions must be correct
         assert_eq!(

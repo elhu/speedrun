@@ -258,7 +258,8 @@ pub fn export_mp4(
             };
 
             player.seek(time);
-            let img = renderer.render_frame(player.screen(), &player.cursor(), w, h);
+            let screen = player.screen();
+            let img = renderer.render_frame(&screen, &player.cursor(), w, h);
             stdin.write_all(img.as_raw())?;
 
             if let Some(cb) = progress {

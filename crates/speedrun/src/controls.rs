@@ -88,7 +88,7 @@ fn format_speed(speed: f64) -> String {
 fn write_str_at(buf: &mut Buffer, x: &mut u16, y: u16, s: &str, max_x: u16) {
     for ch in s.chars() {
         if *x < max_x {
-            buf.get_mut(*x, y).set_char(ch);
+            buf[(*x, y)].set_char(ch);
             *x += 1;
         }
     }
@@ -228,9 +228,8 @@ impl Widget for ControlsBar {
         // Fill background for entire row
         let bg_style = Style::default().bg(Color::DarkGray).fg(Color::White);
         for x in base_x..max_x {
-            let cell = buf.get_mut(x, y);
-            cell.set_style(bg_style);
-            cell.set_char(' ');
+            buf[(x, y)].set_style(bg_style);
+            buf[(x, y)].set_char(' ');
         }
 
         let mut x = base_x;
@@ -270,7 +269,7 @@ impl Widget for ControlsBar {
             // Filled portion (█)
             for _ in 0..filled {
                 if x < max_x {
-                    buf.get_mut(x, y).set_char('█');
+                    buf[(x, y)].set_char('█');
                     x += 1;
                 }
             }
@@ -278,7 +277,7 @@ impl Widget for ControlsBar {
             // Empty portion (░)
             for _ in filled..pw {
                 if x < max_x {
-                    buf.get_mut(x, y).set_char('░');
+                    buf[(x, y)].set_char('░');
                     x += 1;
                 }
             }
@@ -287,7 +286,7 @@ impl Widget for ControlsBar {
             for col in marker_cols {
                 let mx = progress_start + col;
                 if mx < max_x {
-                    buf.get_mut(mx, y).set_char('│');
+                    buf[(mx, y)].set_char('│');
                 }
             }
 
@@ -297,9 +296,8 @@ impl Widget for ControlsBar {
                 let search_style = Style::default().fg(Color::Yellow).bg(Color::DarkGray);
                 for ch in indicator.chars() {
                     if x < max_x {
-                        let cell = buf.get_mut(x, y);
-                        cell.set_char(ch);
-                        cell.set_style(search_style);
+                        buf[(x, y)].set_char(ch);
+                        buf[(x, y)].set_style(search_style);
                         x += 1;
                     }
                 }
@@ -325,7 +323,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         controls.render(area, &mut buf);
         (0..width)
-            .map(|x| buf.get(x, 0).symbol().to_string())
+            .map(|x| buf[(x, 0)].symbol().to_string())
             .collect()
     }
 

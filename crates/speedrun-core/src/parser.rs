@@ -97,7 +97,7 @@ pub fn feed_event(vt: &mut avt::Vt, event: &Event) -> bool {
             true
         }
         (EventType::Resize, EventData::Resize { cols, rows }) => {
-            let _ = vt.feed_str(&format!("\x1b[8;{rows};{cols}t"));
+            let _ = vt.resize(*cols as usize, *rows as usize);
             true
         }
         _ => false,
@@ -1148,7 +1148,7 @@ mod tests {
         let changed = feed_event(&mut vt, &event);
         assert!(changed, "Output event should return true");
         assert!(
-            vt.view()[0].text().contains("hello"),
+            vt.line(0).text().contains("hello"),
             "terminal should show 'hello' after Output event"
         );
     }

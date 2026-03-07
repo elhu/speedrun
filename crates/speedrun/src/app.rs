@@ -785,7 +785,7 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        let area = frame.size();
+        let area = frame.area();
 
         let cursor = self.player.cursor();
         let (rec_cols, rec_rows) = self.player.size();
@@ -800,20 +800,16 @@ impl App {
         );
 
         // Compute on-screen matches for highlighting
+        let screen_lines = self.player.screen();
         let (screen_matches, current_match_idx) = if let Some(ref query) = self.search_query {
-            let lines: Vec<String> = self
-                .player
-                .screen()
-                .iter()
-                .map(|line| line.text())
-                .collect();
+            let lines: Vec<String> = screen_lines.iter().map(|line| line.text()).collect();
             let matches = find_on_screen_matches(&lines, query);
             (matches, self.current_match_index)
         } else {
             (Vec::new(), None)
         };
 
-        let view = TerminalView::new(self.player.screen(), cursor, (rec_cols, rec_rows))
+        let view = TerminalView::new(&screen_lines, cursor, (rec_cols, rec_rows))
             .with_scroll(self.viewport.scroll_x, self.viewport.scroll_y)
             .with_matches(screen_matches, current_match_idx);
 
@@ -997,7 +993,7 @@ mod tests {
 
         // Verify row 0 starts with "$ hello"
         let buf = terminal.backend().buffer();
-        let cell_text: String = (0..7).map(|x| buf.get(x, 0).symbol().to_string()).collect();
+        let cell_text: String = (0..7).map(|x| buf[(x, 0)].symbol().to_string()).collect();
         assert_eq!(cell_text, "$ hello");
     }
 
@@ -1688,7 +1684,7 @@ mod tests {
         // The controls bar fills the bottom row with a dark gray background
         // At minimum, the state icon should appear — check it's non-empty
         let bottom_row: String = (0..cols)
-            .map(|x| buf.get(x, rows).symbol().to_string())
+            .map(|x| buf[(x, rows)].symbol().to_string())
             .collect();
         // Controls bar was rendered — it contains content (not all spaces from a blank terminal)
         // The paused icon is "▮▮" or end icon "■ ". Check it's not all spaces.

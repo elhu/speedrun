@@ -145,17 +145,17 @@ pub fn xml_escape(s: &str) -> String {
 
 /// Resolve foreground and background colors for an `avt::Segment` using the
 /// palette. Handles bold-brightening and inverse.
-fn resolve_segment_colors(
-    seg: &avt::Segment,
+fn resolve_pen_colors(
+    pen: &avt::Pen,
     palette: &Palette,
     export_opts: &ExportOptions,
 ) -> (rgb::RGB8, rgb::RGB8) {
     use avt::Color;
 
-    let fg_color: Option<Color> = seg.foreground();
-    let bg_color: Option<Color> = seg.background();
-    let is_bold = seg.is_bold();
-    let is_inverse = seg.is_inverse();
+    let fg_color: Option<Color> = pen.foreground();
+    let bg_color: Option<Color> = pen.background();
+    let is_bold = pen.is_bold();
+    let is_inverse = pen.is_inverse();
 
     let fg = match fg_color {
         Some(color) => {
@@ -221,14 +221,15 @@ pub(crate) fn render_screen_to_svg_elements(
         let y_top = row_idx as f64 * lh;
         let y_baseline = y_top + font_size;
 
-        // Background rects for non-default background segments
+        // Background rects for non-default background chunks
         let mut col_offset = 0usize;
-        for seg in line.segments() {
-            let (_, bg) = resolve_segment_colors(&seg, palette, export_opts);
-            let seg_cols = seg.text().chars().count() * seg.char_width();
+        for chunk in line.chunks(|c1, c2| c1.pen() != c2.pen()) {
+            let pen = chunk[0].pen();
+            let (_, bg) = resolve_pen_colors(pen, palette, export_opts);
+            let chunk_cols: usize = chunk.iter().map(|c| c.width()).sum();
             if bg != default_bg {
                 let x = col_offset as f64 * cw;
-                let w = seg_cols as f64 * cw;
+                let w = chunk_cols as f64 * cw;
                 write!(
                     buf,
                     "<rect x=\"{x:.2}\" y=\"{y_top:.2}\" width=\"{w:.2}\" height=\"{lh:.2}\" fill=\"#{r:02x}{g:02x}{b:02x}\"/>",
@@ -237,17 +238,18 @@ pub(crate) fn render_screen_to_svg_elements(
                     b = bg.b
                 )?;
             }
-            col_offset += seg_cols;
+            col_offset += chunk_cols;
         }
 
-        // Text elements per styled segment
+        // Text elements per styled chunk
         let mut col_offset = 0usize;
-        for seg in line.segments() {
-            let text = seg.text();
-            let seg_cols = text.chars().count() * seg.char_width();
+        for chunk in line.chunks(|c1, c2| c1.pen() != c2.pen()) {
+            let pen = chunk[0].pen();
+            let text: String = chunk.iter().map(|c| c.char()).collect();
+            let chunk_cols: usize = chunk.iter().map(|c| c.width()).sum();
             let trimmed = text.trim_end_matches(' ');
             if !trimmed.is_empty() {
-                let (fg, _) = resolve_segment_colors(&seg, palette, export_opts);
+                let (fg, _) = resolve_pen_colors(pen, palette, export_opts);
                 let x = col_offset as f64 * cw;
 
                 let mut attrs = format!(
@@ -256,22 +258,22 @@ pub(crate) fn render_screen_to_svg_elements(
                     g = fg.g,
                     b = fg.b
                 );
-                if seg.is_bold() {
+                if pen.is_bold() {
                     attrs.push_str(" font-weight=\"bold\"");
                 }
-                if seg.is_italic() {
+                if pen.is_italic() {
                     attrs.push_str(" font-style=\"italic\"");
                 }
-                if seg.is_underline() {
+                if pen.is_underline() {
                     attrs.push_str(" text-decoration=\"underline\"");
                 }
-                if seg.is_strikethrough() {
+                if pen.is_strikethrough() {
                     attrs.push_str(" text-decoration=\"line-through\"");
                 }
 
                 write!(buf, "<text {attrs}>{}</text>", xml_escape(trimmed))?;
             }
-            col_offset += seg_cols;
+            col_offset += chunk_cols;
         }
     }
 
@@ -334,7 +336,7 @@ pub fn export_svg(
         b = bg.b
     )?;
 
-    let screen = player.screen().to_vec();
+    let screen = player.screen();
     let cursor = player.cursor();
 
     let cfg = RenderConfig {
@@ -598,7 +600,7 @@ fn render_frame_content(
     options: &AnimatedSvgOptions,
     bg: rgb::RGB8,
 ) -> Result<String, ExportError> {
-    let screen = player.screen().to_vec();
+    let screen = player.screen();
     let cursor = player.cursor();
 
     let cfg = RenderConfig {

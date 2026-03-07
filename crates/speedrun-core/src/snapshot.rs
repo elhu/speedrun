@@ -49,7 +49,6 @@ pub struct CursorState {
 pub fn create_vt(cols: usize, rows: usize) -> avt::Vt {
     avt::Vt::builder()
         .size(cols, rows)
-        .resizable(true)
         .scrollback_limit(0)
         .build()
 }
@@ -114,12 +113,10 @@ mod tests {
         let restored = snapshot.restore();
 
         // Verify line text matches line-by-line
-        let orig_view = vt.view();
-        let rest_view = restored.view();
         for row in 0..4 {
             assert_eq!(
-                orig_view[row].text(),
-                rest_view[row].text(),
+                vt.line(row).text(),
+                restored.line(row).text(),
                 "line {row} text mismatch"
             );
         }
@@ -139,14 +136,15 @@ mod tests {
         let restored = snapshot.restore();
 
         // Verify text content
-        let rest_view = restored.view();
-        let line = &rest_view[0];
+        let line = restored.line(0);
         assert!(line.text().starts_with("Styled Text"));
 
         // Verify attributes on the restored cells
-        let cells: Vec<(char, avt::Pen)> = line.cells().collect();
+        let cells = line.cells();
         // Check the first character 'S'
-        let (ch, ref pen) = cells[0];
+        let cell = &cells[0];
+        let ch = cell.char();
+        let pen = cell.pen();
         assert_eq!(ch, 'S');
         assert!(pen.is_bold(), "expected bold");
         assert_eq!(
@@ -205,9 +203,8 @@ mod tests {
         let snapshot = TerminalSnapshot::capture(&vt);
         let restored = snapshot.restore();
 
-        let rest_view = restored.view();
         assert!(
-            rest_view[0].text().starts_with("alt buffer content"),
+            restored.line(0).text().starts_with("alt buffer content"),
             "alternate buffer content should be preserved after capture/restore"
         );
 
@@ -221,10 +218,9 @@ mod tests {
         let snapshot = TerminalSnapshot::capture(&vt);
         let restored = snapshot.restore();
 
-        let rest_view = restored.view();
         // When primary is active, we should see primary content
         assert!(
-            rest_view[0].text().starts_with("primary content"),
+            restored.line(0).text().starts_with("primary content"),
             "primary buffer content should be preserved"
         );
 
@@ -240,7 +236,7 @@ mod tests {
     fn resize() {
         let mut vt = create_vt(80, 24);
         // xtwinops: \x1b[8;rows;cols t — note rows;cols order
-        vt.feed_str("\x1b[8;40;120t");
+        vt.resize(120, 40);
         vt.feed_str("after resize");
 
         let snapshot = TerminalSnapshot::capture(&vt);
@@ -262,9 +258,8 @@ mod tests {
             "restored Vt size should be (120, 40)"
         );
 
-        let rest_view = restored.view();
         assert!(
-            rest_view[0].text().starts_with("after resize"),
+            restored.line(0).text().starts_with("after resize"),
             "text content should be preserved after resize round-trip"
         );
     }
@@ -278,12 +273,10 @@ mod tests {
         let restored = snapshot.restore();
 
         // Verify all lines are blank
-        let orig_view = vt.view();
-        let rest_view = restored.view();
         for row in 0..24 {
             assert_eq!(
-                orig_view[row].text().trim(),
-                rest_view[row].text().trim(),
+                vt.line(row).text().trim(),
+                restored.line(row).text().trim(),
                 "line {row} should be blank"
             );
         }
