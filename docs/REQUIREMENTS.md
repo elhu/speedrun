@@ -732,7 +732,283 @@ These are explicitly **not** included in v1:
 These are natural extensions that the architecture supports but are deferred:
 
 ### Phase 5 — Marker authoring and auto-pause
-Add markers during playback with `m` (unlabeled) or `M` (labeled, with inline text prompt following the search input UX pattern). Markers are appended to the `.cast` file as standard asciicast marker events; a first-time `[y/N]` confirmation guards against unexpected file modification. New CLI flag `-m, --pause-at-markers` auto-pauses playback when a marker is crossed during `tick()` (not on seek/step). Virtual markers at start (0:00) and end (duration) are always-on boundaries for `[`/`]` navigation — `]` past the last marker jumps to end, `[` before the first jumps to start.
+
+Three epics covering marker playback behavior, core authoring infrastructure, and TUI integration.
+
+#### Epic 5.1 — Marker playback behavior
+
+Enhances how markers affect navigation and playback. No file I/O, no new input modes.
+
+**Ticket 5.1.1 — Virtual marker navigation boundaries**
+
+Modify `[`/`]` so they always have a destination, even with zero markers.
+
+Changes:
+- `app.rs` `Action::NextMarker` handler: if no real marker found after current time, `seek(duration)` and pause (same as `JumpToEnd` behavior).
+- `app.rs` `Action::PrevMarker` handler: if no real marker found before current time, `seek(0.0)`.
+- `help.rs`: update `] [` description to mention start/end boundaries.
+
+Acceptance criteria:
+- [ ] `]` when no markers exist seeks to recording end.
+- [ ] `[` when no markers exist seeks to recording start.
+- [ ] `]` when past the last marker seeks to recording end.
+- [ ] `[` when before the first marker seeks to recording start.
+- [ ] `]` when between markers still jumps to next real marker (existing behavior preserved).
+- [ ] `[` when between markers still jumps to previous real marker (existing behavior preserved).
+- [ ] Help overlay text updated.
+- [ ] Existing marker navigation tests still pass.
+- [ ] New unit tests cover all six cases above.
+
+**Ticket 5.1.2 — Auto-pause at markers (CLI flag + detection)**
+
+Add `--pause-at-markers` flag and marker crossing detection in the event loop.
+
+Changes:
+- `main.rs`: add `-m, --pause-at-markers` to `Args` struct, pass to `App::new()`.
+- `app.rs`: add `pause_at_markers: bool` field to `App`, update constructor.
+- `app.rs` event loop (`run()`): before `tick()`, capture `prev_time`; after `tick()`, check if any marker `m` satisfies `prev_time < m.time <= current_time`; if so, `player.pause()` and seek to the marker's exact time.
+- Detection only fires when `pause_at_markers` is `true` and `player.is_playing()` is `true`.
+- Note: the `seek()` after detection is intentional — `tick()` may have processed events slightly past the marker, and `seek()` restores the exact terminal state at that point. Add a code comment explaining this.
+
+Acceptance criteria:
+- [ ] `speedrun --pause-at-markers file.cast` is accepted by CLI parser.
+- [ ] `speedrun -m file.cast` short form works.
+- [ ] During `tick()` playback, crossing a marker pauses playback at the marker's time.
+- [ ] When multiple markers exist between prev_time and new_time, pauses at the first one.
+- [ ] Seek (`←`/`→`), step (`.`/`,`), and `[`/`]` do NOT trigger auto-pause.
+- [ ] `JumpToPercent`, `JumpToStart`, `JumpToEnd` do NOT trigger auto-pause.
+- [ ] Without `--pause-at-markers`, markers are crossed silently (existing behavior).
+- [ ] With flag but no markers in recording, playback runs normally.
+- [ ] Unit test: marker crossing detected between two tick times.
+- [ ] Unit test: no false positive when tick window doesn't cross a marker.
+
+**Ticket 5.1.3 — Auto-pause UX and help integration**
+
+Polish the auto-pause experience and document everything.
+
+Changes:
+- `app.rs`: on auto-pause, set `controls_force_show = true` and `controls_manually_hidden = false`.
+- `app.rs`: after auto-pause, `Space` resumes normally and continues to next marker.
+- `help.rs`: add `"Markers"` keybinding group between Navigation and Search. Include documentation of `--pause-at-markers` behavior.
+- Update `insta` snapshot tests for the help overlay.
+- Verify: auto-pause at last marker, then `Space` resumes, playback continues to end and auto-pauses at duration (existing end-of-recording behavior).
+
+Acceptance criteria:
+- [ ] Controls bar becomes visible immediately on auto-pause.
+- [ ] `Space` after auto-pause resumes playback normally.
+- [ ] Playback that resumes after auto-pause will pause again at the next marker.
+- [ ] Auto-pause at last marker followed by `Space` plays to end, then auto-pauses at duration.
+- [ ] Help overlay contains a "Markers" group.
+- [ ] Help overlay `insta` snapshots updated and passing.
+- [ ] `cargo clippy --workspace -- -D warnings` passes.
+- [ ] `cargo fmt --check` passes.
+- [ ] All existing tests pass.
+
+#### Epic 5.2 — Marker authoring core
+
+Core library support for creating markers and converting them to asciicast format. No file I/O (stays WASM-compatible).
+
+**Ticket 5.2.1 — Parser: accept out-of-order events**
+
+The v2 parser currently skips events with timestamps earlier than the preceding event (`parser.rs:483-496`), producing a warning. Marker authoring appends marker events to the end of the `.cast` file with raw times that may be earlier than the last event. Without this fix, appended markers are silently dropped on reload.
+
+Changes:
+- `parser.rs`: remove the v2 monotonicity skip. Instead of `continue` on out-of-order timestamps, accept the event (still emit a warning for diagnostics).
+- `parser.rs`: after the event parsing loop, sort `events` by `time` (stable sort to preserve file order for same-timestamp events).
+- `parser.rs`: re-derive `markers` from the sorted events list (or sort `markers` separately).
+- `timemap.rs`: no changes needed — `TimeMap::build()` receives sorted raw times.
+
+Acceptance criteria:
+- [ ] A `.cast` file with an appended out-of-order marker event parses successfully.
+- [ ] The marker appears in `recording.markers` at the correct sorted position.
+- [ ] The marker appears in `recording.events` at the correct sorted position.
+- [ ] A warning is still emitted for out-of-order timestamps (non-breaking diagnostic).
+- [ ] Existing test files with properly ordered events produce identical parse results.
+- [ ] New test: file with marker appended after last event but with earlier timestamp.
+- [ ] `cargo clippy --workspace -- -D warnings` passes.
+
+**Ticket 5.2.2 — Reverse time mapping (effective → raw)**
+
+Add the ability to convert effective times back to raw times in `TimeMap`, using the "uncapped delta" strategy.
+
+Changes:
+- `timemap.rs`: store `raw_times: Vec<f64>` alongside `effective_times` in the `TimeMap` struct (populated during `build()`).
+- `timemap.rs`: add `pub fn raw_time(&self, effective: f64) -> Option<f64>`.
+- Algorithm: binary search `effective_times` for surrounding events. Compute `raw = prev_raw + (effective - prev_eff)`. This preserves the effective-time position on reload because the delta from the preceding event is always ≤ the idle limit (it came from an already-capped effective gap), so it will never be re-capped.
+- Edge cases: before first event → `None`, at/after last event → `Some(last_raw)`, exact event match → exact raw time (via the same formula, no special case needed — avoids f64 equality issues).
+
+Acceptance criteria:
+- [ ] `raw_time(eff)` returns `Some(raw)` for any effective time within the recording range.
+- [ ] `raw_time()` returns `None` for effective times before the first event.
+- [ ] For recordings with no idle limit, `raw_time(t) == Some(t)` for all event times.
+- [ ] For recordings with idle limit, round-trip holds: `effective_time(i)` → `raw_time()` returns the original raw time for every event index.
+- [ ] Within an idle-capped gap: `raw_time(prev_eff + delta)` returns `prev_raw + delta` (NOT linear interpolation across the full raw gap).
+- [ ] `TimeMap` memory increase is exactly `size_of::<f64>() * num_events`.
+- [ ] All existing `TimeMap` tests still pass.
+- [ ] New tests: no-limit round-trip, idle-limited round-trip, uncapped-delta in gap, before-first, at-last, empty map.
+
+**Ticket 5.2.3 — Marker serialization and Player::add_marker()**
+
+Add a `Player` method to create a marker at the current position, returning the serialized NDJSON line for the caller to persist.
+
+Changes:
+- `parser.rs`: add `pub fn serialize_marker_event(raw_time: f64, label: &str) -> String`. Returns `[<raw_time>,"m","<label>"]` using `serde_json::to_string` on a `(f64, &str, &str)` tuple for correct JSON escaping. Round `raw_time` to 6 decimal places to avoid floating-point noise (e.g., `3.5000000000000004`).
+- `player.rs`: add `pub fn add_marker(&mut self, label: String) -> Option<String>`:
+  1. Gets current effective time via `self.current_time`.
+  2. Converts to raw via `self.time_map.raw_time()`.
+  3. Creates `Marker { time: effective_time, label }` and inserts into `self.markers` in sorted order (binary search insertion).
+  4. Returns `Some(serialized_ndjson_line)` on success, `None` if time conversion fails.
+- `player.rs`: add `pub fn version(&self) -> u8` accessor (returns `self.recording.header.version`), used by TUI to gate v3 rejection.
+- `lib.rs`: re-export `serialize_marker_event`.
+
+Acceptance criteria:
+- [ ] `serialize_marker_event(3.0, "chapter-1")` produces valid JSON: `[3.0,"m","chapter-1"]`.
+- [ ] `serialize_marker_event(1.5, "")` produces `[1.5,"m",""]` (empty label is valid).
+- [ ] Labels with quotes, backslashes, and unicode are properly JSON-escaped.
+- [ ] Raw times are rounded to 6 decimal places (no floating-point noise).
+- [ ] `player.add_marker("test".into())` inserts a marker at the current effective time.
+- [ ] After `add_marker()`, `player.markers()` returns the new marker in sorted position.
+- [ ] `add_marker()` returns `Some(line)` where `line` is valid NDJSON.
+- [ ] Multiple `add_marker()` calls maintain sorted order.
+- [ ] After `add_marker()`, `[`/`]` navigation finds the new marker immediately.
+- [ ] Tests with idle-limited recordings verify correct raw time (uncapped delta, not interpolation).
+
+#### Epic 5.3 — Marker authoring TUI
+
+Wire marker creation into the TUI with file persistence, confirmation safety, and labeled marker input.
+
+Depends on: Epic 5.2.
+
+**Ticket 5.3.1 — Unlabeled marker authoring (`m` key)**
+
+Add the `m` key to create unlabeled markers, with file modification confirmation and append-to-file persistence.
+
+Changes:
+- `input.rs`: add `Action::AddMarker` variant, map `KeyCode::Char('m')`.
+- `app.rs`: add fields: `file_path: Option<PathBuf>`, `file_modify_confirmed: bool`, `marker_feedback: Option<Instant>`, `pending_marker_time: Option<f64>`.
+- `main.rs`: pass `Some(file.clone())` to `App::new()` (or `None` for stdin).
+- `app.rs`: add `InputMode::ConfirmFileModify` with pending action tracking.
+- On `m` press: capture `pending_marker_time = Some(player.current_time())`. If playing, pause (store `was_playing_before_confirm`). If `file_path.is_none()` (stdin), show transient error and return. If not yet confirmed, enter `ConfirmFileModify` mode. If already confirmed, create marker immediately.
+- Confirmation renders `"Append marker to <filename>? [y/N] "` on bottom row. `y` confirms and proceeds. `n`/`N`/`Esc` cancels. `q` and `Ctrl+C` still quit the application.
+- On confirmed: call `player.add_marker("".into())` using the captured `pending_marker_time` (seek to it first if current time has drifted). Open file with `OpenOptions::new().append(true).open()`. Write NDJSON line followed by `\n`. Handle write errors as transient feedback, not panics.
+- On cancel: resume playback if was playing.
+- V3 files: check `player.version() == 3`, show transient error "Marker authoring not supported for v3 recordings" and return.
+
+Acceptance criteria:
+- [ ] Pressing `m` in Normal mode when not yet confirmed shows `[y/N]` confirmation prompt.
+- [ ] Playback pauses during confirmation dialog.
+- [ ] `y` at confirmation creates the marker and appends to file.
+- [ ] `n`, `N`, or `Esc` at confirmation cancels without modifying the file.
+- [ ] `q` and `Ctrl+C` during confirmation still quit the application.
+- [ ] On cancel, playback resumes if it was playing before.
+- [ ] After confirming once, subsequent `m` presses create markers immediately.
+- [ ] The `.cast` file gains a new NDJSON line with correct format.
+- [ ] No double-newline: file append handles trailing newline correctly.
+- [ ] Marker appears on the progress bar immediately after creation.
+- [ ] `[`/`]` navigation finds newly created markers.
+- [ ] Marker is placed at the time when `m` was pressed, not when `y` confirmed.
+- [ ] When reading from stdin, `m` shows transient error.
+- [ ] V3 recordings show transient error, no file modification.
+- [ ] File write errors shown as transient feedback, not panics.
+- [ ] Tests: confirmation flow (accept/reject), file append (`tempfile`), stdin rejection, v3 rejection, marker-time-at-keypress.
+
+**Ticket 5.3.2 — Labeled marker authoring (`M` key)**
+
+Add the `M` key to create labeled markers with an inline text prompt.
+
+Changes:
+- `input.rs`: add `Action::AddLabeledMarker` variant, map `KeyCode::Char('M')`.
+- `app.rs`: add `InputMode::MarkerLabelInput` mode and `marker_label_input: String` buffer.
+- `Action::AddLabeledMarker` handler: capture `pending_marker_time`, pause playback. If stdin → error. If v3 → error. If not confirmed → `ConfirmFileModify` (on confirm, transition to `MarkerLabelInput`). If confirmed → enter `MarkerLabelInput` directly.
+- `handle_marker_label_input()`: same pattern as `handle_search_input()`. `Enter` → create marker with label, append to file, return to Normal, resume if was playing. `Esc` → cancel, resume. `Backspace` / `Char(c)` as expected.
+- Render: `"Marker label: <text>"` with cursor on bottom row.
+
+Acceptance criteria:
+- [ ] `M` (when confirmed) enters MarkerLabelInput mode.
+- [ ] `M` (when not confirmed) shows `[y/N]`, then enters MarkerLabelInput on `y`.
+- [ ] Playback pauses during label input.
+- [ ] Text input renders on bottom row as `"Marker label: <text>"`.
+- [ ] `Enter` with non-empty text creates a labeled marker and appends to file.
+- [ ] `Enter` with empty text creates an unlabeled marker (empty string label).
+- [ ] `Esc` cancels input, no marker created, resumes playback if was playing.
+- [ ] `Backspace` removes the last character.
+- [ ] Special characters in label are properly JSON-escaped in the file.
+- [ ] Marker is placed at the time when `M` was pressed, not when `Enter` committed.
+- [ ] MarkerLabelInput mode does not process playback keys.
+- [ ] Tests: label input flow, labeled marker file output, cancel via Esc.
+
+**Ticket 5.3.3 — Help overlay and edge case hardening**
+
+Update documentation and handle edge cases across the marker authoring system.
+
+Changes:
+- `help.rs`: add `m` and `M` to the "Markers" group (created in 5.1.3): `("m", "Add marker")`, `("M", "Add labeled marker")`.
+- Update `insta` snapshot tests for new overlay dimensions.
+- Edge cases to verify:
+  - `m`/`M` while help overlay is visible → ignored (existing pattern).
+  - `m`/`M` while in SearchInput → ignored (only Normal mode dispatches actions).
+  - File becomes read-only after initial confirmation → graceful transient error.
+  - `--no-controls` + marker creation → controls force-show briefly for feedback.
+  - Markers added while paused work correctly.
+  - Markers added while playing work correctly (time captured at keypress).
+  - Round-trip test: add marker → reload file → marker at correct position.
+
+Acceptance criteria:
+- [ ] Help overlay displays `m` / `M` keybindings in the Markers group.
+- [ ] Help overlay `insta` snapshot tests updated and passing.
+- [ ] `m`/`M` ignored during help overlay, search input, and marker label input.
+- [ ] Read-only file error shown as transient message, not panic.
+- [ ] Markers can be added while paused and while playing.
+- [ ] Controls become visible after marker creation even with `--no-controls`.
+- [ ] Round-trip integration test: create marker, re-parse file, marker at correct effective time.
+- [ ] `cargo test --workspace` passes.
+- [ ] `cargo clippy --workspace -- -D warnings` passes.
+- [ ] `cargo fmt --check` passes.
+- [ ] No `unwrap()` in any new library code.
+
+### Phase 5 — Known limitations
+
+- **No undo.** Markers are appended to the file immediately. Users can manually edit the `.cast` file (NDJSON) to remove unwanted markers.
+- **V3 not supported for authoring.** Marker authoring is only supported for asciicast v2 files. V3 uses relative timestamps which require different serialization logic. V3 support can be added in a follow-up.
+- **Duration may change on reload.** Adding a marker inside an idle-capped gap introduces a new event that splits the gap, potentially increasing the effective duration. The increase equals the marker's offset into the gap. This is inherent to the asciicast format + idle limiting.
+
+### Phase 5 — Dependency graph
+
+```
+Phase 5:  [5.1.1 Virtual boundaries]
+          [5.1.2 Auto-pause detection]──→ [5.1.3 Auto-pause UX]
+          (5.1.1 and 5.1.2 can run in parallel)
+          (5.1.3 depends on 5.1.2)
+
+          [5.2.1 Parser out-of-order]─┐
+          [5.2.2 Reverse time map]────┼→ [5.2.3 Serialization + add_marker]
+                                      │
+          (5.2.1 and 5.2.2 can run in parallel)
+          (5.2.3 depends on 5.2.1 + 5.2.2)
+
+          [5.3.1 Unlabeled `m`]──→ [5.3.2 Labeled `M`]──→ [5.3.3 Help + hardening]
+          (5.3 depends on Epic 5.2 completion)
+
+          Epic 5.1 and Epic 5.2 can run in parallel.
+```
+
+### Phase 5 — Acceptance criteria
+
+- [ ] `]` past last marker jumps to end; `[` before first marker jumps to start.
+- [ ] `[`/`]` work sensibly with zero markers (jump to start/end).
+- [ ] `--pause-at-markers` auto-pauses on marker crossing during `tick()` only.
+- [ ] Auto-pause does not trigger on seek, step, or marker navigation.
+- [ ] `m` adds an unlabeled marker at current time, persisted to `.cast` file.
+- [ ] `M` opens label input, then adds a labeled marker on Enter.
+- [ ] First marker write shows `[y/N]` confirmation; subsequent writes skip it.
+- [ ] Markers added during playback appear immediately on the progress bar and in `[`/`]` navigation.
+- [ ] Marker time is captured at keypress, not at confirmation/commit.
+- [ ] Playback pauses during confirmation and label input dialogs.
+- [ ] Out-of-order marker events in `.cast` files are accepted on reload.
+- [ ] V3 recordings show clear error when marker authoring is attempted.
+- [ ] Stdin input shows clear error when attempting to add markers.
+- [ ] All tests pass, clippy clean, fmt check passes.
+- [ ] Help overlay documents new keybindings.
 
 ### Phase 6 — Mouse support
 Click-to-seek on the progress bar, scroll wheel for speed control. Requires careful handling of tmux/screen mouse passthrough and terminal compatibility detection.
@@ -783,4 +1059,13 @@ Phase 4:  [4.1 Edge cases]
           [4.3 UX polish]
           (All can run in parallel)
           (Phase 4 depends on Phase 3 completion)
+
+Phase 5:  [5.1.1 Virtual boundaries]─────────────────┐
+          [5.1.2 Auto-pause detection]→[5.1.3 UX]    │
+                                                      │
+          [5.2.1 Parser out-of-order]─┐               │
+          [5.2.2 Reverse time map]────┼→[5.2.3 Ser.]──┼→[5.3.1 `m`]→[5.3.2 `M`]→[5.3.3 Polish]
+                                                      │
+          (5.1 and 5.2 can run in parallel)
+          (5.3 depends on 5.2 completion)
 ```
