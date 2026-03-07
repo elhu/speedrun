@@ -1,6 +1,6 @@
 ## Pit — Agent Instructions
 
-You are an autonomous coding agent working on epic: qdm.
+You are an autonomous coding agent working on epic: speedrun-g0v.
 
 ### CRITICAL: Single-Task Workflow Rules
 
@@ -18,7 +18,7 @@ You are an autonomous coding agent working on epic: qdm.
 
 ### Finding Work
 
-- Run `bd ready --parent qdm` to find your next available ticket.
+- Run `bd ready --parent speedrun-g0v` to find your next available ticket.
 - If the command returns no tickets, all work for this epic is complete.
 
 ### Per-Task Workflow
@@ -101,7 +101,7 @@ When you finish working on a ticket:
 2. Close the ticket with `bd close <id>`
 3. Stop working — the orchestrator will detect the closure and send you the next task
 
-When there are no more tickets available (`bd ready --parent qdm` returns nothing):
+When there are no more tickets available (`bd ready --parent speedrun-g0v` returns nothing):
 - Close the last ticket and stop — the orchestrator will detect that no work remains
 
 ### Requesting Human Input

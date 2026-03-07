@@ -3,31 +3,31 @@ source: crates/speedrun/src/help.rs
 expression: output
 ---
                                                             
-          ┌──────────── Keybindings ────────────┐           
-          │ Playback                            │           
-          │   Space         Play / pause        │           
-          │   + / =         Speed up            │           
-          │   -             Speed down          │           
-          │                                     │           
-          │ Navigation                          │           
-          │   ← →           Seek ±5s            │           
-          │   Shift+← →     Seek ±30s           │           
-          │   . ,           Step forward / back │           
-          │   ] [           Next / prev marker  │           
-          │   0-9           Jump to 0%-90%      │           
-          │   Home / g      Jump to start       │           
-          │   End / G       Jump to end         │           
-          │                                     │           
-          │ Search                              │           
-          │   /             Search              │           
-          │   n             Next match          │           
-          │   N             Previous match      │           
-          │   Esc           Clear search        │           
-          │                                     │           
-          │ Display                             │           
-          │   Tab           Toggle controls     │           
-          │   ?             Toggle help         │           
-          │                                     │           
-          │ Application                         │           
-          │   q / Esc       Quit                │           
-          └─────────────────────────────────────┘
+   ┌─────────────────── Keybindings ───────────────────┐    
+   │ Playback                                          │    
+   │   Space         Play / pause                      │    
+   │   + / =         Speed up                          │    
+   │   -             Speed down                        │    
+   │                                                   │    
+   │ Navigation                                        │    
+   │   ← →           Seek ±5s                          │    
+   │   Shift+← →     Seek ±30s                         │    
+   │   . ,           Step forward / back               │    
+   │   ] [           Next / prev marker (or end/start) │    
+   │   0-9           Jump to 0%-90%                    │    
+   │   Home / g      Jump to start                     │    
+   │   End / G       Jump to end                       │    
+   │                                                   │    
+   │ Search                                            │    
+   │   /             Search                            │    
+   │   n             Next match                        │    
+   │   N             Previous match                    │    
+   │   Esc           Clear search                      │    
+   │                                                   │    
+   │ Display                                           │    
+   │   Tab           Toggle controls                   │    
+   │   ?             Toggle help                       │    
+   │                                                   │    
+   │ Application                                       │    
+   │   q / Esc       Quit                              │    
+   └───────────────────────────────────────────────────┘

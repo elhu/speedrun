@@ -432,6 +432,12 @@ impl App {
                     .find(|m| m.time > current + 0.001)
                 {
                     self.player.seek(marker.time);
+                } else {
+                    // No marker after current position: fall through to end of recording
+                    self.player.seek(self.player.duration());
+                    if self.player.is_playing() {
+                        self.player.pause();
+                    }
                 }
                 self.controls_force_show = true;
                 self.controls_manually_hidden = false;
@@ -447,6 +453,9 @@ impl App {
                     .find(|m| m.time < current - 0.001)
                 {
                     self.player.seek(marker.time);
+                } else {
+                    // No marker before current position: fall through to start of recording
+                    self.player.seek(0.0);
                 }
                 self.controls_force_show = true;
                 self.controls_manually_hidden = false;
@@ -945,14 +954,15 @@ mod tests {
     }
 
     #[test]
-    fn next_marker_from_last_marker_does_nothing() {
+    fn next_marker_past_last_seeks_to_end() {
         let mut player = load_player("with_markers.cast");
         player.seek(7.0);
         let mut app = App::new(player, false);
+        let duration = app.player.duration();
 
         app.handle_action(Action::NextMarker);
-        // Should stay at 7.0 since no marker after
-        assert!((app.player.current_time() - 7.0).abs() < 1e-9);
+        // Should seek to end of recording when no marker exists after current position
+        assert!((app.player.current_time() - duration).abs() < 1e-9);
     }
 
     #[test]
@@ -967,14 +977,14 @@ mod tests {
     }
 
     #[test]
-    fn prev_marker_from_first_marker_does_nothing() {
+    fn prev_marker_before_first_seeks_to_start() {
         let mut player = load_player("with_markers.cast");
         player.seek(3.0);
         let mut app = App::new(player, false);
 
         app.handle_action(Action::PrevMarker);
-        // Should stay at 3.0 since no marker before
-        assert!((app.player.current_time() - 3.0).abs() < 1e-9);
+        // Should seek to start of recording when no marker exists before current position
+        assert!((app.player.current_time() - 0.0).abs() < 1e-9);
     }
 
     #[test]
@@ -988,15 +998,26 @@ mod tests {
     }
 
     #[test]
-    fn marker_nav_no_markers_does_nothing() {
+    fn next_marker_no_markers_seeks_to_end() {
         // minimal_v2.cast has no markers
         let player = load_player("minimal_v2.cast");
         let mut app = App::new(player, false);
+        let duration = app.player.duration();
 
         app.handle_action(Action::NextMarker);
-        assert!((app.player.current_time() - 0.0).abs() < 1e-9);
+        // Should seek to end of recording when there are no markers
+        assert!((app.player.current_time() - duration).abs() < 1e-9);
+    }
+
+    #[test]
+    fn prev_marker_no_markers_seeks_to_start() {
+        // minimal_v2.cast has no markers; PrevMarker from mid → seeks to start
+        let mut player = load_player("minimal_v2.cast");
+        player.seek(1.0);
+        let mut app = App::new(player, false);
 
         app.handle_action(Action::PrevMarker);
+        // No markers in recording → seeks to start (0.0)
         assert!((app.player.current_time() - 0.0).abs() < 1e-9);
     }
 

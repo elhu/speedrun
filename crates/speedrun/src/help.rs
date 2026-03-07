@@ -31,7 +31,7 @@ const KEYBINDING_GROUPS: &[KeybindingGroup] = &[
             ("← →", "Seek ±5s"),
             ("Shift+← →", "Seek ±30s"),
             (". ,", "Step forward / back"),
-            ("] [", "Next / prev marker"),
+            ("] [", "Next / prev marker (or end/start)"),
             ("0-9", "Jump to 0%-90%"),
             ("Home / g", "Jump to start"),
             ("End / G", "Jump to end"),
@@ -242,15 +242,15 @@ mod tests {
         let (w, h) = HelpOverlay::overlay_size();
         // 5 groups + 17 bindings + 4 blank lines = 26 content lines + 2 border = 28
         assert_eq!(h, 28);
-        // Widest line: 2 + 12 + 2 + 19 = 35 content + 4 (border+padding) = 39
-        assert_eq!(w, 39);
+        // Widest line: 2 + 12 + 2 + 33 = 49 content + 4 (border+padding) = 53
+        assert_eq!(w, 53);
     }
 
     #[test]
     fn content_width_matches_widest_binding() {
         let w = HelpOverlay::content_width();
-        // "  {:<12}  Step forward / back" = 2 + 12 + 2 + 19 = 35
-        assert_eq!(w, 35);
+        // "  {] [:<12}  Next / prev marker (or end/start)" = 2 + 12 + 2 + 33 = 49
+        assert_eq!(w, 49);
     }
 
     #[test]
@@ -266,10 +266,10 @@ mod tests {
     fn centering_standard_terminal() {
         let area = Rect::new(0, 0, 80, 30);
         let rect = HelpOverlay::centered_rect(area);
-        assert_eq!(rect.width, 39);
+        assert_eq!(rect.width, 53);
         assert_eq!(rect.height, 28);
-        // Horizontal: (80 - 39) / 2 = 20
-        assert_eq!(rect.x, 20);
+        // Horizontal: (80 - 53) / 2 = 13
+        assert_eq!(rect.x, 13);
         // Vertical: (30 - 28) / 2 = 1
         assert_eq!(rect.y, 1);
     }
@@ -278,9 +278,9 @@ mod tests {
     fn centering_large_terminal() {
         let area = Rect::new(0, 0, 120, 40);
         let rect = HelpOverlay::centered_rect(area);
-        assert_eq!(rect.width, 39);
+        assert_eq!(rect.width, 53);
         assert_eq!(rect.height, 28);
-        assert_eq!(rect.x, 40); // (120 - 39) / 2 = 40
+        assert_eq!(rect.x, 33); // (120 - 53) / 2 = 33
         assert_eq!(rect.y, 6); // (40 - 28) / 2 = 6
     }
 
@@ -298,9 +298,9 @@ mod tests {
     fn centering_with_offset_area() {
         let area = Rect::new(5, 3, 80, 30);
         let rect = HelpOverlay::centered_rect(area);
-        assert_eq!(rect.width, 39);
+        assert_eq!(rect.width, 53);
         assert_eq!(rect.height, 28);
-        assert_eq!(rect.x, 25); // 5 + (80 - 39) / 2
+        assert_eq!(rect.x, 18); // 5 + (80 - 53) / 2
         assert_eq!(rect.y, 4); // 3 + (30 - 28) / 2
     }
 

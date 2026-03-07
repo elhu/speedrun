@@ -26,7 +26,6 @@ var PitPlugin = async () => {
   const epic = process.env.PIT_EPIC;
   const socketPath = process.env.PIT_SOCKET_PATH;
   if (!epic || !socketPath) {
-    console.error("[pit plugin] PIT_EPIC and PIT_SOCKET_PATH env vars required. Plugin inactive.");
     return {};
   }
   return {
