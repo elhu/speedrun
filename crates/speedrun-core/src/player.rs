@@ -123,6 +123,23 @@ impl fmt::Debug for Player {
 
 impl Player {
     /// Load a recording from a reader using default options.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use speedrun_core::Player;
+    ///
+    /// let data = b"{\"version\":2,\"width\":80,\"height\":24}\n[0.5,\"o\",\"hello\"]\n[1.0,\"o\",\" world\"]";
+    /// let mut player = Player::load(&data[..]).unwrap();
+    ///
+    /// assert_eq!(player.size(), (80, 24));
+    /// assert!(player.duration() > 0.0);
+    ///
+    /// // Seek to a point and inspect screen content
+    /// player.seek(1.0);
+    /// let screen = player.screen();
+    /// assert!(!screen.is_empty());
+    /// ```
     pub fn load(reader: impl Read) -> Result<Self, PlayerError> {
         Self::load_with(reader, LoadOptions::default())
     }

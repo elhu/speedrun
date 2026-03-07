@@ -13,6 +13,22 @@
 //! - **Snapshots** ([`snapshot`]) — captures and restores terminal state via the `avt`
 //!   virtual terminal emulator.
 //!
+//! # Quick Start
+//!
+//! ```
+//! use speedrun_core::Player;
+//!
+//! let cast = b"{\"version\":2,\"width\":80,\"height\":24}\n[0.5,\"o\",\"$ hello\\r\\n\"]";
+//! let mut player = Player::load(&cast[..]).unwrap();
+//!
+//! // Seek to a point in the recording
+//! player.seek(0.5);
+//!
+//! // Read terminal screen content
+//! let first_line = player.screen()[0].text();
+//! assert!(first_line.starts_with("$ hello"));
+//! ```
+//!
 //! # Dependencies
 //!
 //! Some public APIs expose types from the [`avt`](https://docs.rs/avt) crate

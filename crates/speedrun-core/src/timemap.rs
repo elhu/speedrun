@@ -39,6 +39,21 @@ impl TimeMap {
     ///
     /// `idle_limit`: if `Some(limit)`, inter-event gaps exceeding `limit`
     /// seconds are capped to `limit`. If `None`, effective = raw.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use speedrun_core::TimeMap;
+    ///
+    /// // Raw timestamps with a large idle gap between 1.0s and 30.0s
+    /// let raw_times = &[0.0, 1.0, 30.0, 31.0];
+    /// let time_map = TimeMap::build(raw_times, Some(2.0)).unwrap();
+    ///
+    /// // The 29s gap is capped to 2s, compressing total duration
+    /// assert_eq!(time_map.duration(), 4.0);
+    /// assert_eq!(time_map.len(), 4);
+    /// assert_eq!(time_map.effective_time(2), Some(3.0));
+    /// ```
     pub fn build(raw_times: &[f64], idle_limit: Option<f64>) -> Result<Self, TimeMapError> {
         if let Some(limit) = idle_limit
             && limit <= 0.0

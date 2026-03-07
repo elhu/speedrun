@@ -257,6 +257,17 @@ struct RawTerm {
 /// [`ParseWarning`]s and skipped rather than failing the entire parse.
 /// Only header-level errors (missing header, unsupported version, etc.)
 /// produce a hard [`ParseError`].
+///
+/// # Examples
+///
+/// ```
+/// let data = b"{\"version\":2,\"width\":80,\"height\":24}\n[0.5,\"o\",\"hello\"]\n[1.0,\"o\",\" world\"]";
+/// let recording = speedrun_core::parser::parse(&data[..]).unwrap();
+/// assert_eq!(recording.header.version, 2);
+/// assert_eq!(recording.header.width, 80);
+/// assert_eq!(recording.events.len(), 2);
+/// assert!(recording.warnings.is_empty());
+/// ```
 pub fn parse(reader: impl std::io::Read) -> Result<Recording, ParseError> {
     use std::io::{BufRead, BufReader, ErrorKind};
 
