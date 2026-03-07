@@ -54,8 +54,22 @@ pub mod timemap;
 
 pub use index::{KEYFRAME_INTERVAL, Keyframe, KeyframeIndex};
 pub use parser::{
-    Event, EventData, EventType, Header, Marker, ParseError, ParseWarning, Recording, parse,
+    Event, EventData, EventType, Header, Marker, ParseError, ParseWarning, Recording, feed_event,
+    parse,
 };
 pub use player::{LoadOptions, Player, PlayerError};
 pub use snapshot::{CursorState, TerminalSnapshot, create_vt};
 pub use timemap::{TimeMap, TimeMapError};
+
+/// Shared test helper used by unit tests across `parser`, `index`, and `player` modules.
+///
+/// A separate copy lives in `tests/common.rs` for integration tests (same logic, same
+/// `CARGO_MANIFEST_DIR`). The TUI crate keeps its own copy because its `CARGO_MANIFEST_DIR`
+/// points to a different directory.
+#[cfg(test)]
+pub(crate) fn testdata_path(name: &str) -> std::path::PathBuf {
+    let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    p.push("../../testdata");
+    p.push(name);
+    p
+}

@@ -8,7 +8,9 @@ use std::fmt;
 use std::io::Read;
 
 use crate::index::{KEYFRAME_INTERVAL, KeyframeIndex};
-use crate::parser::{EventData, EventType, Marker, ParseError, ParseWarning, Recording};
+use crate::parser::{
+    EventData, EventType, Marker, ParseError, ParseWarning, Recording, feed_event,
+};
 use crate::snapshot::{CursorState, create_vt};
 use crate::timemap::{TimeMap, TimeMapError};
 
@@ -240,20 +242,7 @@ impl Player {
             }
 
             let event = &self.recording.events[self.current_event_index];
-            match (&event.event_type, &event.data) {
-                (EventType::Output, EventData::Text(data)) => {
-                    let _ = self.vt.feed_str(data);
-                }
-                (EventType::Resize, EventData::Resize { cols, rows }) => {
-                    // xtwinops: rows;cols order (opposite of EventData field order)
-                    let _ = self.vt.feed_str(&format!("\x1b[8;{rows};{cols}t"));
-                }
-                // Input and Marker events don't affect terminal state
-                (EventType::Input, _) | (EventType::Marker, _) => {}
-                // Ignore mismatched type/data combinations
-                _ => {}
-            }
-
+            feed_event(&mut self.vt, event);
             self.current_event_index += 1;
         }
 
@@ -371,20 +360,9 @@ impl Player {
             }
 
             let event = &self.recording.events[self.current_event_index];
-            match (&event.event_type, &event.data) {
-                (EventType::Output, EventData::Text(data)) => {
-                    let _ = self.vt.feed_str(data);
-                    state_changed = true;
-                }
-                (EventType::Resize, EventData::Resize { cols, rows }) => {
-                    let _ = self.vt.feed_str(&format!("\x1b[8;{rows};{cols}t"));
-                    state_changed = true;
-                }
-                // Input and Marker events don't affect terminal state
-                (EventType::Input, _) | (EventType::Marker, _) => {}
-                _ => {}
+            if feed_event(&mut self.vt, event) {
+                state_changed = true;
             }
-
             self.current_event_index += 1;
         }
 
@@ -443,20 +421,14 @@ impl Player {
         let mut idx = self.current_event_index;
         while idx < self.recording.events.len() {
             let event = &self.recording.events[idx];
-            match (&event.event_type, &event.data) {
-                (EventType::Output, EventData::Text(data)) => {
-                    let _ = self.vt.feed_str(data);
-                    if let Some(t) = self.time_map.effective_time(idx) {
-                        self.current_time = t;
-                    }
-                    self.current_event_index = idx + 1;
-                    return true;
+            let is_output = event.event_type == EventType::Output;
+            feed_event(&mut self.vt, event);
+            if is_output {
+                if let Some(t) = self.time_map.effective_time(idx) {
+                    self.current_time = t;
                 }
-                (EventType::Resize, EventData::Resize { cols, rows }) => {
-                    let _ = self.vt.feed_str(&format!("\x1b[8;{rows};{cols}t"));
-                }
-                // Input / Marker: skip
-                _ => {}
+                self.current_event_index = idx + 1;
+                return true;
             }
             idx += 1;
         }
@@ -501,20 +473,13 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    fn testdata_path(name: &str) -> std::path::PathBuf {
-        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        p.push("../../testdata");
-        p.push(name);
-        p
-    }
-
     fn load_file(name: &str) -> Player {
-        let file = std::fs::File::open(testdata_path(name)).unwrap();
+        let file = std::fs::File::open(crate::testdata_path(name)).unwrap();
         Player::load(file).unwrap()
     }
 
     fn load_file_with(name: &str, opts: LoadOptions) -> Player {
-        let file = std::fs::File::open(testdata_path(name)).unwrap();
+        let file = std::fs::File::open(crate::testdata_path(name)).unwrap();
         Player::load_with(file, opts).unwrap()
     }
 
@@ -544,7 +509,7 @@ mod tests {
             "real_session.cast",
         ];
         for name in &files {
-            let file = std::fs::File::open(testdata_path(name)).unwrap();
+            let file = std::fs::File::open(crate::testdata_path(name)).unwrap();
             Player::load(file).unwrap_or_else(|e| panic!("failed to load {name}: {e}"));
         }
     }

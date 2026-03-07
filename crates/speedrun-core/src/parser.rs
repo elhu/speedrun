@@ -72,6 +72,38 @@ pub struct Event {
     pub data: EventData,
 }
 
+/// Feed a single event into the terminal emulator.
+///
+/// Returns `true` if the event changed terminal state (Output or Resize).
+/// Input and Marker events return `false`.
+///
+/// # Examples
+///
+/// ```
+/// use speedrun_core::parser::{Event, EventData, EventType, feed_event};
+///
+/// let mut vt = speedrun_core::create_vt(80, 24);
+/// let event = Event {
+///     time: 0.5,
+///     event_type: EventType::Output,
+///     data: EventData::Text("hello".into()),
+/// };
+/// assert!(feed_event(&mut vt, &event));
+/// ```
+pub fn feed_event(vt: &mut avt::Vt, event: &Event) -> bool {
+    match (&event.event_type, &event.data) {
+        (EventType::Output, EventData::Text(data)) => {
+            let _ = vt.feed_str(data);
+            true
+        }
+        (EventType::Resize, EventData::Resize { cols, rows }) => {
+            let _ = vt.feed_str(&format!("\x1b[8;{rows};{cols}t"));
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Typed event data. Resize is eagerly parsed into structured dimensions
 /// so downstream consumers never parse "COLSxROWS" strings.
 #[derive(Debug, Clone, Serialize)]
@@ -565,20 +597,13 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    fn testdata_path(name: &str) -> std::path::PathBuf {
-        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        p.push("../../testdata");
-        p.push(name);
-        p
-    }
-
     // -----------------------------------------------------------------------
     // Valid file tests
     // -----------------------------------------------------------------------
 
     #[test]
     fn test_parse_minimal_v2() {
-        let file = std::fs::File::open(testdata_path("minimal_v2.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("minimal_v2.cast")).unwrap();
         let recording = parse(file).unwrap();
 
         assert_eq!(recording.header.version, 2);
@@ -598,7 +623,7 @@ mod tests {
 
     #[test]
     fn test_parse_minimal_v3() {
-        let file = std::fs::File::open(testdata_path("minimal_v3.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("minimal_v3.cast")).unwrap();
         let recording = parse(file).unwrap();
 
         assert_eq!(recording.header.version, 3);
@@ -620,7 +645,7 @@ mod tests {
 
     #[test]
     fn test_parse_empty() {
-        let file = std::fs::File::open(testdata_path("empty.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("empty.cast")).unwrap();
         let recording = parse(file).unwrap();
 
         assert_eq!(recording.header.version, 2);
@@ -632,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_parse_with_markers() {
-        let file = std::fs::File::open(testdata_path("with_markers.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("with_markers.cast")).unwrap();
         let recording = parse(file).unwrap();
 
         assert_eq!(recording.events.len(), 8);
@@ -659,7 +684,7 @@ mod tests {
 
     #[test]
     fn test_parse_with_resize() {
-        let file = std::fs::File::open(testdata_path("with_resize.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("with_resize.cast")).unwrap();
         let recording = parse(file).unwrap();
 
         assert_eq!(recording.events.len(), 6);
@@ -678,18 +703,18 @@ mod tests {
     #[test]
     fn test_parse_remaining_valid_files() {
         // long_idle.cast
-        let file = std::fs::File::open(testdata_path("long_idle.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("long_idle.cast")).unwrap();
         let recording = parse(file).unwrap();
         assert_eq!(recording.header.idle_time_limit, Some(2.0));
         assert_eq!(recording.events.len(), 5);
 
         // alternate_buffer.cast
-        let file = std::fs::File::open(testdata_path("alternate_buffer.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("alternate_buffer.cast")).unwrap();
         let recording = parse(file).unwrap();
         assert_eq!(recording.events.len(), 9);
 
         // real_session.cast — v3, 188x50, at least 100 events, timestamp 1772729753
-        let file = std::fs::File::open(testdata_path("real_session.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("real_session.cast")).unwrap();
         let recording = parse(file).unwrap();
         assert_eq!(recording.header.version, 3);
         assert_eq!(recording.header.width, 188);
@@ -710,14 +735,14 @@ mod tests {
 
     #[test]
     fn test_invalid_empty_file() {
-        let file = std::fs::File::open(testdata_path("invalid/empty_file.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("invalid/empty_file.cast")).unwrap();
         let err = parse(file).unwrap_err();
         assert!(matches!(err, ParseError::EmptyFile));
     }
 
     #[test]
     fn test_invalid_no_header() {
-        let file = std::fs::File::open(testdata_path("invalid/no_header.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("invalid/no_header.cast")).unwrap();
         let err = parse(file).unwrap_err();
         assert!(
             matches!(err, ParseError::InvalidHeader { .. }),
@@ -727,7 +752,7 @@ mod tests {
 
     #[test]
     fn test_invalid_bad_json() {
-        let file = std::fs::File::open(testdata_path("invalid/bad_json.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("invalid/bad_json.cast")).unwrap();
         let err = parse(file).unwrap_err();
         assert!(
             matches!(err, ParseError::InvalidHeader { .. }),
@@ -737,7 +762,7 @@ mod tests {
 
     #[test]
     fn test_invalid_bad_version() {
-        let file = std::fs::File::open(testdata_path("invalid/bad_version.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("invalid/bad_version.cast")).unwrap();
         let err = parse(file).unwrap_err();
         assert!(
             matches!(err, ParseError::UnsupportedVersion { version: 99 }),
@@ -747,7 +772,8 @@ mod tests {
 
     #[test]
     fn test_invalid_missing_fields() {
-        let file = std::fs::File::open(testdata_path("invalid/missing_fields.cast")).unwrap();
+        let file =
+            std::fs::File::open(crate::testdata_path("invalid/missing_fields.cast")).unwrap();
         let err = parse(file).unwrap_err();
         assert!(
             matches!(err, ParseError::MissingField { .. }),
@@ -759,7 +785,7 @@ mod tests {
     fn test_invalid_bad_event() {
         // bad_event.cast has valid header + malformed event [0.5, "o"] (only 2 elements)
         // Under lenient parsing: Ok with 1 warning, valid events after the bad one are kept
-        let file = std::fs::File::open(testdata_path("invalid/bad_event.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("invalid/bad_event.cast")).unwrap();
         let recording = parse(file).unwrap();
         assert!(
             recording.warnings.len() >= 1,
@@ -781,7 +807,8 @@ mod tests {
 
     #[test]
     fn test_invalid_binary_garbage() {
-        let file = std::fs::File::open(testdata_path("invalid/binary_garbage.cast")).unwrap();
+        let file =
+            std::fs::File::open(crate::testdata_path("invalid/binary_garbage.cast")).unwrap();
         let err = parse(file).unwrap_err();
         assert!(
             matches!(
@@ -798,7 +825,7 @@ mod tests {
     fn test_invalid_truncated() {
         // truncated.cast has a valid header and one valid event, then a truncated line.
         // Under lenient parsing: Ok with at least 1 event and possibly a warning
-        let file = std::fs::File::open(testdata_path("invalid/truncated.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("invalid/truncated.cast")).unwrap();
         let recording = parse(file).unwrap();
         // Should have at least the first valid event
         assert!(
@@ -994,7 +1021,7 @@ mod tests {
 
     #[test]
     fn test_happy_path_regression_minimal_v2() {
-        let file = std::fs::File::open(testdata_path("minimal_v2.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("minimal_v2.cast")).unwrap();
         let recording = parse(file).unwrap();
         assert_eq!(recording.events.len(), 4, "expected 4 events");
         assert!(recording.warnings.is_empty(), "expected no warnings");
@@ -1002,7 +1029,7 @@ mod tests {
 
     #[test]
     fn test_happy_path_regression_real_session() {
-        let file = std::fs::File::open(testdata_path("real_session.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("real_session.cast")).unwrap();
         let recording = parse(file).unwrap();
         assert_eq!(recording.events.len(), 114, "expected 114 events");
         assert!(recording.warnings.is_empty(), "expected no warnings");
@@ -1014,7 +1041,7 @@ mod tests {
 
     #[test]
     fn test_parse_input_only() {
-        let file = std::fs::File::open(testdata_path("input_only.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("input_only.cast")).unwrap();
         let recording = parse(file).unwrap();
         assert_eq!(recording.header.version, 3);
         assert_eq!(recording.header.width, 80);
@@ -1035,7 +1062,7 @@ mod tests {
 
     #[test]
     fn test_parse_sub_second() {
-        let file = std::fs::File::open(testdata_path("sub_second.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("sub_second.cast")).unwrap();
         let recording = parse(file).unwrap();
         assert_eq!(recording.header.version, 2);
         assert_eq!(recording.header.width, 80);
@@ -1055,8 +1082,67 @@ mod tests {
 
     #[test]
     fn test_parse_minimal_v2_snapshot() {
-        let file = std::fs::File::open(testdata_path("minimal_v2.cast")).unwrap();
+        let file = std::fs::File::open(crate::testdata_path("minimal_v2.cast")).unwrap();
         let recording = parse(file).unwrap();
         insta::assert_debug_snapshot!(recording);
+    }
+
+    // -----------------------------------------------------------------------
+    // feed_event() unit tests
+    // -----------------------------------------------------------------------
+
+    fn make_event(event_type: EventType, data: EventData) -> Event {
+        Event {
+            time: 0.0,
+            event_type,
+            data,
+        }
+    }
+
+    #[test]
+    fn test_feed_event_output() {
+        let mut vt = crate::create_vt(80, 24);
+        let event = make_event(EventType::Output, EventData::Text("hello".into()));
+        let changed = feed_event(&mut vt, &event);
+        assert!(changed, "Output event should return true");
+        assert!(
+            vt.view()[0].text().contains("hello"),
+            "terminal should show 'hello' after Output event"
+        );
+    }
+
+    #[test]
+    fn test_feed_event_resize() {
+        let mut vt = crate::create_vt(80, 24);
+        let event = make_event(
+            EventType::Resize,
+            EventData::Resize {
+                cols: 120,
+                rows: 40,
+            },
+        );
+        let changed = feed_event(&mut vt, &event);
+        assert!(changed, "Resize event should return true");
+        assert_eq!(
+            vt.size(),
+            (120, 40),
+            "terminal size should change after Resize event"
+        );
+    }
+
+    #[test]
+    fn test_feed_event_input() {
+        let mut vt = crate::create_vt(80, 24);
+        let event = make_event(EventType::Input, EventData::Text("some input".into()));
+        let changed = feed_event(&mut vt, &event);
+        assert!(!changed, "Input event should return false");
+    }
+
+    #[test]
+    fn test_feed_event_marker() {
+        let mut vt = crate::create_vt(80, 24);
+        let event = make_event(EventType::Marker, EventData::Text("my-marker".into()));
+        let changed = feed_event(&mut vt, &event);
+        assert!(!changed, "Marker event should return false");
     }
 }

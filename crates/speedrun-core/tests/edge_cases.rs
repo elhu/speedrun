@@ -4,20 +4,13 @@
 //! edge case inputs including empty recordings, input-only recordings,
 //! sub-second recordings, resize events, malformed inputs, and Unicode.
 
+mod common;
+
 use speedrun_core::{EventType, Player};
 use std::io::Write;
 use tempfile::NamedTempFile;
 
-// ---------------------------------------------------------------------------
-// Helper utilities
-// ---------------------------------------------------------------------------
-
-fn testdata_path(name: &str) -> std::path::PathBuf {
-    let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("../../testdata");
-    p.push(name);
-    p
-}
+use common::testdata_path;
 
 fn load_file(name: &str) -> Player {
     let file = std::fs::File::open(testdata_path(name))

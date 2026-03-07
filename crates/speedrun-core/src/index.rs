@@ -5,7 +5,7 @@
 //! This allows the player to seek to any point by restoring the nearest
 //! keyframe and replaying only a small number of events forward.
 
-use crate::parser::{EventData, EventType, Recording};
+use crate::parser::{Recording, feed_event};
 use crate::snapshot::{TerminalSnapshot, create_vt};
 use crate::timemap::TimeMap;
 
@@ -81,19 +81,7 @@ impl KeyframeIndex {
 
             // Process the event through the terminal
             let event = &recording.events[i];
-            match (&event.event_type, &event.data) {
-                (EventType::Output, EventData::Text(data)) => {
-                    let _ = vt.feed_str(data);
-                }
-                (EventType::Resize, EventData::Resize { cols, rows }) => {
-                    // Critical: xtwinops takes rows;cols (opposite of EventData order)
-                    let _ = vt.feed_str(&format!("\x1b[8;{rows};{cols}t"));
-                }
-                // Input and Marker events don't change terminal state
-                (EventType::Input, _) | (EventType::Marker, _) => {}
-                // Ignore mismatched type/data combinations
-                _ => {}
-            }
+            feed_event(&mut vt, event);
         }
 
         KeyframeIndex { keyframes }
@@ -134,15 +122,8 @@ mod tests {
     use crate::parser::{Event, EventData, EventType, Header, Recording};
     use crate::timemap::TimeMap;
 
-    fn testdata_path(name: &str) -> std::path::PathBuf {
-        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        p.push("../../testdata");
-        p.push(name);
-        p
-    }
-
     fn load_test_recording(name: &str) -> Recording {
-        let path = testdata_path(name);
+        let path = crate::testdata_path(name);
         let file = std::fs::File::open(&path).unwrap();
         crate::parse(file).unwrap()
     }
