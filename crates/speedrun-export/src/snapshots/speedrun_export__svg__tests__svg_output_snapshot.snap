@@ -1,0 +1,5 @@
+---
+source: crates/speedrun-export/src/svg.rs
+expression: svg
+---
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60.00 36.00" font-family="'Fira Code', 'Cascadia Code', 'JetBrains Mono', 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" font-size="10.00"><rect width="100%" height="100%" fill="#1e1e1e"/><text x="0.00" y="10.00" fill="#cd0000">hi</text><text x="12.00" y="10.00" fill="#d0d0d0"> world</text><text x="0.00" y="22.00" fill="#d0d0d0" font-weight="bold">foo</text></svg>

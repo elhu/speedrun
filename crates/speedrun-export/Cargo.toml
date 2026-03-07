@@ -10,3 +10,6 @@ workspace = true
 speedrun-core = { path = "../speedrun-core" }
 avt.workspace = true
 rgb.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
