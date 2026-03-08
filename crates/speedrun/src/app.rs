@@ -249,8 +249,15 @@ impl App {
 
     /// Create the marker and append it to the file.
     fn execute_marker_creation(&mut self) {
-        if let Some(line) = self.player.add_marker(String::new()) {
-            self.append_marker_to_file(&line);
+        if let Some(write) = self.player.add_marker(String::new()) {
+            match write {
+                speedrun_core::MarkerWrite::AppendLine(line) => {
+                    self.append_marker_to_file(&line);
+                }
+                speedrun_core::MarkerWrite::RewriteFile { .. } => {
+                    unreachable!("v3 markers are blocked by version check above")
+                }
+            }
         }
         self.controls_force_show = true;
         self.controls_manually_hidden = false;
@@ -477,8 +484,15 @@ impl App {
                 let label = self.marker_label_input.drain(..).collect::<String>();
                 self.input_mode = InputMode::Normal;
                 // Create marker with the entered label (empty label is valid)
-                if let Some(line) = self.player.add_marker(label) {
-                    self.append_marker_to_file(&line);
+                if let Some(write) = self.player.add_marker(label) {
+                    match write {
+                        speedrun_core::MarkerWrite::AppendLine(line) => {
+                            self.append_marker_to_file(&line);
+                        }
+                        speedrun_core::MarkerWrite::RewriteFile { .. } => {
+                            unreachable!("v3 markers are blocked by version check above")
+                        }
+                    }
                 }
                 self.controls_force_show = true;
                 self.controls_manually_hidden = false;
@@ -2764,7 +2778,10 @@ mod tests {
 
         // 3. Seek to a position and add a marker
         player.seek(5.0);
-        let line = player.add_marker("round-trip-test".into()).unwrap();
+        let write = player.add_marker("round-trip-test".into()).unwrap();
+        let speedrun_core::MarkerWrite::AppendLine(line) = write else {
+            panic!("expected AppendLine for v2, got {write:?}");
+        };
 
         // 4. Append to file (using same newline-safe logic as App::append_line_to_file)
         {

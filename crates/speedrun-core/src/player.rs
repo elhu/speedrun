@@ -62,6 +62,27 @@ impl From<TimeMapError> for PlayerError {
 }
 
 // ---------------------------------------------------------------------------
+// Marker write result
+// ---------------------------------------------------------------------------
+
+/// Describes how the caller should persist a newly created marker.
+///
+/// Returned by [`Player::add_marker()`] so the caller knows whether to
+/// append a line (v2) or rewrite the entire file (v3).
+#[derive(Debug, Clone, PartialEq)]
+pub enum MarkerWrite {
+    /// V2: caller appends this line to the file.
+    AppendLine(String),
+    /// V3: caller must rewrite the file with this marker inserted.
+    RewriteFile {
+        /// The raw (uncapped) timestamp for the marker.
+        raw_time: f64,
+        /// The marker label.
+        label: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
 // Load options
 // ---------------------------------------------------------------------------
 
@@ -324,20 +345,36 @@ impl Player {
     /// Create a marker at the current playback position.
     ///
     /// Inserts the marker into the in-memory marker list (sorted by time)
-    /// and returns the serialized NDJSON line for the caller to write to the
-    /// `.cast` file. Returns `None` if the current time cannot be mapped
-    /// back to a raw timestamp.
-    pub fn add_marker(&mut self, label: String) -> Option<String> {
+    /// and returns a [`MarkerWrite`] describing how the caller should persist
+    /// it:
+    /// - **V2**: [`MarkerWrite::AppendLine`] with the serialized NDJSON line.
+    /// - **V3**: [`MarkerWrite::RewriteFile`] with the raw timestamp and label
+    ///   (the caller must rewrite the file to insert the marker).
+    ///
+    /// Returns `None` if the current time cannot be mapped back to a raw
+    /// timestamp.
+    pub fn add_marker(&mut self, label: String) -> Option<MarkerWrite> {
         let effective = self.current_time;
         let raw = self.time_map.raw_time(effective)?;
-        let line = crate::parser::serialize_marker_event(raw, &label);
+
         let marker = Marker {
             time: effective,
-            label,
+            label: label.clone(),
         };
         let pos = self.markers.partition_point(|m| m.time <= effective);
         self.markers.insert(pos, marker);
-        Some(line)
+
+        let result = match self.recording.header.version {
+            3 => MarkerWrite::RewriteFile {
+                raw_time: raw,
+                label,
+            },
+            _ => {
+                let line = crate::parser::serialize_marker_event(raw, &label);
+                MarkerWrite::AppendLine(line)
+            }
+        };
+        Some(result)
     }
 
     // -----------------------------------------------------------------------
@@ -1472,7 +1509,10 @@ mod tests {
         let mut player = load_file("minimal_v2.cast");
         player.seek(1.5);
 
-        let line = player.add_marker("my-chapter".into()).unwrap();
+        let result = player.add_marker("my-chapter".into()).unwrap();
+        let MarkerWrite::AppendLine(line) = result else {
+            panic!("expected AppendLine for v2, got {result:?}");
+        };
         // Should be a valid JSON array: [<number>,"m","my-chapter"]
         let val: serde_json::Value =
             serde_json::from_str(&line).expect("NDJSON line should be valid JSON");
@@ -1547,7 +1587,10 @@ mod tests {
         // At effective=3.1, raw_time = 35.0 + (3.1 - 3.1) = 35.0
         let mut player = load_file("long_idle.cast");
         player.seek(3.1);
-        let line = player.add_marker("at-idle".into()).unwrap();
+        let result = player.add_marker("at-idle".into()).unwrap();
+        let MarkerWrite::AppendLine(line) = result else {
+            panic!("expected AppendLine for v2, got {result:?}");
+        };
         let val: serde_json::Value = serde_json::from_str(&line).unwrap();
         let arr = val.as_array().unwrap();
         let raw = arr[0].as_f64().unwrap();
@@ -1555,6 +1598,68 @@ mod tests {
         assert!(
             (raw - 35.0).abs() < 1e-5,
             "expected raw time ~35.0, got {raw}"
+        );
+    }
+
+    #[test]
+    fn add_marker_v3_returns_rewrite_file() {
+        let mut player = load_file("minimal_v3.cast");
+        player.seek(0.5);
+
+        let result = player.add_marker("v3-marker".into()).unwrap();
+        let MarkerWrite::RewriteFile { raw_time, label } = result else {
+            panic!("expected RewriteFile for v3, got {result:?}");
+        };
+        assert_eq!(label, "v3-marker");
+        // At effective=0.5, raw_time should be 0.5 (no idle capping in minimal_v3)
+        assert!(
+            (raw_time - 0.5).abs() < 1e-5,
+            "expected raw_time ~0.5, got {raw_time}"
+        );
+    }
+
+    #[test]
+    fn add_marker_v3_inserts_into_markers_list() {
+        let mut player = load_file("minimal_v3.cast");
+        assert!(player.markers().is_empty());
+
+        player.seek(0.5);
+        player.add_marker("first".into());
+
+        let markers = player.markers();
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].label, "first");
+        assert!((markers[0].time - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn add_marker_v3_raw_time_with_idle_limit() {
+        // Verify that v3 RewriteFile.raw_time reflects the uncapped raw time,
+        // mirroring the v2 add_marker_ndjson_raw_time_with_idle_limit test.
+        // long_idle.cast is v2, so we need a v3 file with idle limit.
+        // Construct one inline with an idle gap.
+        //
+        // V3 timestamps are deltas, so the parser accumulates them:
+        //   delta=0.5 → abs=0.5, delta=10.0 → abs=10.5, delta=0.5 → abs=11.0
+        // Raw (absolute) times: [0.5, 10.5, 11.0]
+        // With idle_time_limit=1.0: gap 10.0 capped to 1.0, gap 0.5 unchanged
+        // Effective times: [0.5, 1.5, 2.0]
+        // At effective=1.5, raw_time should be 10.5
+        let data = b"{\"version\":3,\"term\":{\"cols\":80,\"rows\":24},\"idle_time_limit\":1.0}\n\
+                     [0.5,\"o\",\"a\"]\n\
+                     [10.0,\"o\",\"b\"]\n\
+                     [0.5,\"o\",\"c\"]";
+        let mut player = Player::load(&data[..]).unwrap();
+        assert_eq!(player.version(), 3);
+        player.seek(1.5);
+        let result = player.add_marker("idle-check".into()).unwrap();
+        let MarkerWrite::RewriteFile { raw_time, label } = result else {
+            panic!("expected RewriteFile for v3, got {result:?}");
+        };
+        assert_eq!(label, "idle-check");
+        assert!(
+            (raw_time - 10.5).abs() < 1e-5,
+            "expected raw_time ~10.5, got {raw_time}"
         );
     }
 

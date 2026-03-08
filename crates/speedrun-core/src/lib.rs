@@ -60,7 +60,7 @@ pub use parser::{
     Event, EventData, EventType, Header, Marker, ParseError, ParseWarning, Recording, RewriteError,
     feed_event, parse, rewrite_v3_with_marker, serialize_marker_event,
 };
-pub use player::{LoadOptions, Player, PlayerError};
+pub use player::{LoadOptions, MarkerWrite, Player, PlayerError};
 pub use search::SearchHit;
 pub use snapshot::{CursorState, TerminalSnapshot, create_vt};
 pub use timemap::{TimeMap, TimeMapError};
