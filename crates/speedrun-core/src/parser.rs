@@ -631,6 +631,187 @@ pub fn serialize_marker_event(raw_time: f64, label: &str) -> String {
     serde_json::to_string(&(rounded, "m", label)).expect("marker tuple serialization cannot fail")
 }
 
+// ---------------------------------------------------------------------------
+// V3 rewrite support
+// ---------------------------------------------------------------------------
+
+/// Errors that can occur when rewriting a v3 asciicast file to insert a marker.
+#[derive(Debug)]
+pub enum RewriteError {
+    /// The input is not a v3 asciicast file.
+    NotV3,
+    /// The input has no header line.
+    EmptyFile,
+}
+
+impl std::fmt::Display for RewriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RewriteError::NotV3 => write!(f, "input is not a v3 asciicast file"),
+            RewriteError::EmptyFile => write!(f, "input has no header line"),
+        }
+    }
+}
+
+impl std::error::Error for RewriteError {}
+
+/// Attempt to parse a line as a timestamped v3 event, returning the delta if
+/// successful.
+///
+/// A line is considered timestamped if it is a valid 3-element JSON array with
+/// a non-negative numeric first element. This matches the parser's accumulation
+/// semantics (lines 468-480) where `absolute_time` advances before event type
+/// matching, so unknown event types with valid timestamps also count.
+fn try_parse_delta(line: &str) -> Option<f64> {
+    let val: serde_json::Value = serde_json::from_str(line).ok()?;
+    let arr = val.as_array()?;
+    if arr.len() != 3 {
+        return None;
+    }
+    let delta = arr[0].as_f64()?;
+    if delta < 0.0 {
+        return None;
+    }
+    Some(delta)
+}
+
+/// Replace the timestamp in a JSON array line (content between `[` and first
+/// `,`) with a new delta value, preserving the rest of the line byte-for-byte.
+///
+/// Handles integers (`[1,`), decimals (`[0.5,`), and leading whitespace
+/// (`[ 0.5,`).
+fn replace_first_timestamp(line: &str, new_delta: f64) -> String {
+    let rounded = (new_delta * 1_000_000.0).round() / 1_000_000.0;
+    let formatted = serde_json::to_string(&rounded).expect("f64 serialization cannot fail");
+
+    let bracket_pos = line.find('[').expect("timestamped line must contain '['");
+    let search_start = bracket_pos + 1;
+    let comma_pos = line[search_start..]
+        .find(',')
+        .expect("timestamped line must contain ','")
+        + search_start;
+
+    format!(
+        "{}{}{}",
+        &line[..bracket_pos + 1],
+        formatted,
+        &line[comma_pos..]
+    )
+}
+
+/// Rewrite a v3 asciicast file to insert a marker at the given absolute time.
+///
+/// V3 files use relative timestamps (deltas), so a marker cannot simply be
+/// appended — it must be inserted at the correct chronological position and the
+/// following event's delta must be patched. All other lines are preserved
+/// byte-for-byte.
+///
+/// # Arguments
+///
+/// * `input` — the full content of the v3 `.cast` file
+/// * `raw_time` — the absolute time (in seconds) where the marker should appear
+/// * `label` — the marker label
+///
+/// # Errors
+///
+/// Returns [`RewriteError::EmptyFile`] if the input has no header line, or
+/// [`RewriteError::NotV3`] if the header does not specify version 3.
+///
+/// # Examples
+///
+/// ```
+/// use speedrun_core::parser::rewrite_v3_with_marker;
+///
+/// let input = "{\"version\":3,\"term\":{\"cols\":80,\"rows\":24}}\n\
+///              [0.5,\"o\",\"hello\"]\n\
+///              [0.5,\"o\",\"world\"]\n";
+/// let output = rewrite_v3_with_marker(input, 0.7, "mid").unwrap();
+/// assert!(output.contains("\"m\""));
+/// ```
+pub fn rewrite_v3_with_marker(
+    input: &str,
+    raw_time: f64,
+    label: &str,
+) -> Result<String, RewriteError> {
+    let has_trailing_newline = input.ends_with('\n');
+    let lines: Vec<&str> = input.lines().collect();
+
+    if lines.is_empty() {
+        return Err(RewriteError::EmptyFile);
+    }
+
+    // Validate v3 header
+    let header_val: serde_json::Value =
+        serde_json::from_str(lines[0]).map_err(|_| RewriteError::NotV3)?;
+    if header_val.get("version").and_then(|v| v.as_u64()) != Some(3) {
+        return Err(RewriteError::NotV3);
+    }
+
+    // Scan event lines to find the insertion point: the first timestamped line
+    // whose accumulated absolute time is strictly greater than `raw_time`.
+    let mut absolute_time: f64 = 0.0;
+    let mut insertion_idx: Option<usize> = None;
+    let mut prev_abs_at_insertion: f64 = 0.0;
+    let mut acc_at_insertion: f64 = 0.0;
+
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        if let Some(delta) = try_parse_delta(line) {
+            let prev_abs = absolute_time;
+            absolute_time += delta;
+
+            if insertion_idx.is_none() && absolute_time > raw_time {
+                insertion_idx = Some(i);
+                prev_abs_at_insertion = prev_abs;
+                acc_at_insertion = absolute_time;
+            }
+        }
+    }
+
+    // Build output
+    let mut result_lines: Vec<String> = Vec::with_capacity(lines.len() + 1);
+
+    match insertion_idx {
+        Some(ins_idx) => {
+            // Insert marker before the line at ins_idx and patch its delta.
+            let marker_delta = raw_time - prev_abs_at_insertion;
+            let marker_delta_rounded = (marker_delta * 1_000_000.0).round() / 1_000_000.0;
+            let marker_line = serde_json::to_string(&(marker_delta_rounded, "m", label))
+                .expect("marker tuple serialization cannot fail");
+
+            let patched_delta = acc_at_insertion - raw_time;
+            let patched_line = replace_first_timestamp(lines[ins_idx], patched_delta);
+
+            for (i, line) in lines.iter().enumerate() {
+                if i == ins_idx {
+                    result_lines.push(marker_line.clone());
+                    result_lines.push(patched_line.clone());
+                } else {
+                    result_lines.push((*line).to_string());
+                }
+            }
+        }
+        None => {
+            // Marker goes after all events.
+            let marker_delta = raw_time - absolute_time;
+            let marker_delta_rounded = (marker_delta * 1_000_000.0).round() / 1_000_000.0;
+            let marker_line = serde_json::to_string(&(marker_delta_rounded, "m", label))
+                .expect("marker tuple serialization cannot fail");
+
+            for line in &lines {
+                result_lines.push((*line).to_string());
+            }
+            result_lines.push(marker_line);
+        }
+    }
+
+    let mut output = result_lines.join("\n");
+    if has_trailing_newline {
+        output.push('\n');
+    }
+
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1340,5 +1521,370 @@ mod tests {
         // 3.5000000000000004 should round to 3.5
         let line = serialize_marker_event(3.5000000000000004, "x");
         assert_eq!(line, r#"[3.5,"m","x"]"#);
+    }
+
+    // -----------------------------------------------------------------------
+    // rewrite_v3_with_marker() tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: standard v3 header line.
+    const V3_HEADER: &str = r#"{"version":3,"term":{"cols":80,"rows":24}}"#;
+
+    #[test]
+    fn test_rewrite_empty_input() {
+        let err = rewrite_v3_with_marker("", 1.0, "x").unwrap_err();
+        assert!(matches!(err, RewriteError::EmptyFile));
+        assert_eq!(err.to_string(), "input has no header line");
+    }
+
+    #[test]
+    fn test_rewrite_not_v3_version2() {
+        let input = "{\"version\":2,\"width\":80,\"height\":24}\n[0.5,\"o\",\"hi\"]\n";
+        let err = rewrite_v3_with_marker(input, 0.3, "x").unwrap_err();
+        assert!(matches!(err, RewriteError::NotV3));
+        assert_eq!(err.to_string(), "input is not a v3 asciicast file");
+    }
+
+    #[test]
+    fn test_rewrite_not_v3_invalid_json_header() {
+        let input = "not json\n[0.5,\"o\",\"hi\"]\n";
+        let err = rewrite_v3_with_marker(input, 0.3, "x").unwrap_err();
+        assert!(matches!(err, RewriteError::NotV3));
+    }
+
+    #[test]
+    fn test_rewrite_marker_between_events() {
+        // Events at absolute times 0.5 and 1.0. Insert marker at t=0.7.
+        let input = format!("{V3_HEADER}\n[0.5,\"o\",\"a\"]\n[0.5,\"o\",\"b\"]\n");
+        let output = rewrite_v3_with_marker(&input, 0.7, "mid").unwrap();
+
+        // Verify structure: header, event1, marker, patched_event2
+        let out_lines: Vec<&str> = output.lines().collect();
+        assert_eq!(out_lines.len(), 4);
+        assert_eq!(out_lines[0], V3_HEADER); // header unchanged
+        assert_eq!(out_lines[1], "[0.5,\"o\",\"a\"]"); // first event unchanged
+        assert_eq!(out_lines[2], "[0.2,\"m\",\"mid\"]"); // marker: 0.7 - 0.5 = 0.2
+        assert_eq!(out_lines[3], "[0.3,\"o\",\"b\"]"); // patched: 1.0 - 0.7 = 0.3
+    }
+
+    #[test]
+    fn test_rewrite_marker_at_t0() {
+        // First event at abs time 0.5. Insert marker at t=0.
+        let input = format!("{V3_HEADER}\n[0.5,\"o\",\"a\"]\n[0.5,\"o\",\"b\"]\n");
+        let output = rewrite_v3_with_marker(&input, 0.0, "start").unwrap();
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        assert_eq!(out_lines.len(), 4);
+        assert_eq!(out_lines[1], "[0.0,\"m\",\"start\"]"); // marker: 0.0 - 0.0 = 0.0
+        assert_eq!(out_lines[2], "[0.5,\"o\",\"a\"]"); // patched: 0.5 - 0.0 = 0.5 (unchanged)
+    }
+
+    #[test]
+    fn test_rewrite_marker_at_exact_event_time() {
+        // Events at absolute times 0.5, 1.2, 2.0.
+        // Insert marker at t=1.2 → should be inserted AFTER the event at 1.2
+        // (first line with accumulated > 1.2 is the one at 2.0).
+        let input =
+            format!("{V3_HEADER}\n[0.5,\"o\",\"a\"]\n[0.7,\"o\",\"b\"]\n[0.8,\"o\",\"c\"]\n");
+        let output = rewrite_v3_with_marker(&input, 1.2, "exact").unwrap();
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        assert_eq!(out_lines.len(), 5);
+        assert_eq!(out_lines[1], "[0.5,\"o\",\"a\"]"); // unchanged
+        assert_eq!(out_lines[2], "[0.7,\"o\",\"b\"]"); // unchanged (at t=1.2)
+        assert_eq!(out_lines[3], "[0.0,\"m\",\"exact\"]"); // marker: 1.2 - 1.2 = 0.0
+        assert_eq!(out_lines[4], "[0.8,\"o\",\"c\"]"); // patched: 2.0 - 1.2 = 0.8 (unchanged)
+    }
+
+    #[test]
+    fn test_rewrite_marker_after_last_event() {
+        // Events end at absolute time 1.0. Insert marker at t=5.0 → append.
+        let input = format!("{V3_HEADER}\n[0.5,\"o\",\"a\"]\n[0.5,\"o\",\"b\"]\n");
+        let output = rewrite_v3_with_marker(&input, 5.0, "end").unwrap();
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        assert_eq!(out_lines.len(), 4);
+        assert_eq!(out_lines[1], "[0.5,\"o\",\"a\"]"); // unchanged
+        assert_eq!(out_lines[2], "[0.5,\"o\",\"b\"]"); // unchanged
+        assert_eq!(out_lines[3], "[4.0,\"m\",\"end\"]"); // delta: 5.0 - 1.0 = 4.0
+    }
+
+    #[test]
+    fn test_rewrite_header_only() {
+        // Header with no events. Insert marker at t=2.5 → append.
+        let input = format!("{V3_HEADER}\n");
+        let output = rewrite_v3_with_marker(&input, 2.5, "solo").unwrap();
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        assert_eq!(out_lines.len(), 2);
+        assert_eq!(out_lines[0], V3_HEADER);
+        assert_eq!(out_lines[1], "[2.5,\"m\",\"solo\"]"); // delta: 2.5 - 0.0 = 2.5
+    }
+
+    #[test]
+    fn test_rewrite_preserves_blank_and_malformed_lines() {
+        // Blank lines and malformed JSON between valid events.
+        let input = format!("{V3_HEADER}\n[0.5,\"o\",\"a\"]\n\nnot json\n[0.5,\"o\",\"b\"]\n");
+        let output = rewrite_v3_with_marker(&input, 0.7, "m1").unwrap();
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        // Header, event1, blank, "not json", marker, patched_event2
+        assert_eq!(out_lines.len(), 6);
+        assert_eq!(out_lines[0], V3_HEADER);
+        assert_eq!(out_lines[1], "[0.5,\"o\",\"a\"]");
+        assert_eq!(out_lines[2], ""); // blank line preserved
+        assert_eq!(out_lines[3], "not json"); // malformed line preserved
+        assert_eq!(out_lines[4], "[0.2,\"m\",\"m1\"]"); // marker before event2
+        assert_eq!(out_lines[5], "[0.3,\"o\",\"b\"]"); // patched event2
+    }
+
+    #[test]
+    fn test_rewrite_unknown_event_types_advance_time() {
+        // Unknown type "x" at delta 0.5 → abs 0.5. Output at delta 0.5 → abs 1.0.
+        // Insert marker at t=0.7 → between the "x" line and the output line.
+        let input = format!("{V3_HEADER}\n[0.5,\"x\",\"unk\"]\n[0.5,\"o\",\"b\"]\n");
+        let output = rewrite_v3_with_marker(&input, 0.7, "mid").unwrap();
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        assert_eq!(out_lines.len(), 4);
+        assert_eq!(out_lines[1], "[0.5,\"x\",\"unk\"]"); // unchanged
+        assert_eq!(out_lines[2], "[0.2,\"m\",\"mid\"]"); // marker: 0.7 - 0.5 = 0.2
+        assert_eq!(out_lines[3], "[0.3,\"o\",\"b\"]"); // patched: 1.0 - 0.7 = 0.3
+    }
+
+    #[test]
+    fn test_rewrite_timestamp_integer() {
+        // Line with integer timestamp: [1,"o","a"]
+        let input = format!("{V3_HEADER}\n[1,\"o\",\"a\"]\n[1,\"o\",\"b\"]\n");
+        let output = rewrite_v3_with_marker(&input, 1.5, "mid").unwrap();
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        assert_eq!(out_lines[2], "[0.5,\"m\",\"mid\"]"); // marker: 1.5 - 1.0 = 0.5
+        assert_eq!(out_lines[3], "[0.5,\"o\",\"b\"]"); // patched: 2.0 - 1.5 = 0.5
+    }
+
+    #[test]
+    fn test_rewrite_timestamp_leading_whitespace() {
+        // Line with leading whitespace in timestamp: [ 0.5,"o","a"]
+        let input = format!("{V3_HEADER}\n[ 0.5,\"o\",\"a\"]\n[0.5,\"o\",\"b\"]\n");
+        let output = rewrite_v3_with_marker(&input, 0.3, "pre").unwrap();
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        assert_eq!(out_lines.len(), 4);
+        // Marker inserted before the first event
+        assert_eq!(out_lines[1], "[0.3,\"m\",\"pre\"]");
+        // Patched first event: original accumulated 0.5, marker at 0.3, new delta = 0.2
+        assert_eq!(out_lines[2], "[0.2,\"o\",\"a\"]");
+        // Second event unchanged
+        assert_eq!(out_lines[3], "[0.5,\"o\",\"b\"]");
+    }
+
+    #[test]
+    fn test_rewrite_float_precision_six_decimals() {
+        // Verify 6-decimal rounding: 1/3 → 0.333333
+        let input = format!("{V3_HEADER}\n[0.5,\"o\",\"a\"]\n[0.5,\"o\",\"b\"]\n");
+        let output = rewrite_v3_with_marker(&input, 1.0 / 3.0, "third").unwrap();
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        // marker delta = 1/3 - 0 ≈ 0.333333
+        assert_eq!(out_lines[1], "[0.333333,\"m\",\"third\"]");
+        // patched delta = 0.5 - 1/3 ≈ 0.166667
+        assert_eq!(out_lines[2], "[0.166667,\"o\",\"a\"]");
+    }
+
+    #[test]
+    fn test_rewrite_special_chars_in_label() {
+        let input = format!("{V3_HEADER}\n[1.0,\"o\",\"a\"]\n");
+        // Label with quotes, backslashes, and unicode
+        let output = rewrite_v3_with_marker(&input, 2.0, "test\"quote\\slash 🎉").unwrap();
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        // serde_json handles escaping: " → \", \ → \\
+        assert_eq!(out_lines[2], r#"[1.0,"m","test\"quote\\slash 🎉"]"#);
+    }
+
+    #[test]
+    fn test_rewrite_around_existing_markers() {
+        // Existing markers in the file are just timestamped lines for delta purposes.
+        // Event at 0.5, marker at 1.0, event at 1.5. Insert new marker at 0.7.
+        let input =
+            format!("{V3_HEADER}\n[0.5,\"o\",\"a\"]\n[0.5,\"m\",\"old\"]\n[0.5,\"o\",\"b\"]\n");
+        let output = rewrite_v3_with_marker(&input, 0.7, "new").unwrap();
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        assert_eq!(out_lines.len(), 5);
+        assert_eq!(out_lines[1], "[0.5,\"o\",\"a\"]"); // unchanged
+        assert_eq!(out_lines[2], "[0.2,\"m\",\"new\"]"); // new marker: 0.7 - 0.5 = 0.2
+        assert_eq!(out_lines[3], "[0.3,\"m\",\"old\"]"); // patched old marker: 1.0 - 0.7 = 0.3
+        assert_eq!(out_lines[4], "[0.5,\"o\",\"b\"]"); // unchanged
+    }
+
+    #[test]
+    fn test_rewrite_no_trailing_newline() {
+        // Input without trailing newline should produce output without trailing newline.
+        let input = format!("{V3_HEADER}\n[0.5,\"o\",\"a\"]\n[0.5,\"o\",\"b\"]");
+        assert!(!input.ends_with('\n'));
+
+        let output = rewrite_v3_with_marker(&input, 0.7, "mid").unwrap();
+        assert!(!output.ends_with('\n'));
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        assert_eq!(out_lines.len(), 4);
+        assert_eq!(out_lines[2], "[0.2,\"m\",\"mid\"]");
+    }
+
+    #[test]
+    fn test_rewrite_with_trailing_newline() {
+        // Input with trailing newline should produce output with trailing newline.
+        let input = format!("{V3_HEADER}\n[0.5,\"o\",\"a\"]\n[0.5,\"o\",\"b\"]\n");
+        assert!(input.ends_with('\n'));
+
+        let output = rewrite_v3_with_marker(&input, 0.7, "mid").unwrap();
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_rewrite_round_trip() {
+        // Full round-trip: parse(rewrite(input, t, l)) should produce the same
+        // events as parse(input) plus the marker at the correct absolute time.
+        let input =
+            format!("{V3_HEADER}\n[0.5,\"o\",\"a\"]\n[0.7,\"o\",\"b\"]\n[0.8,\"o\",\"c\"]\n");
+
+        let original = parse(Cursor::new(&input)).unwrap();
+        assert_eq!(original.events.len(), 3);
+        assert_eq!(original.markers.len(), 0);
+
+        let rewritten = rewrite_v3_with_marker(&input, 1.0, "mark").unwrap();
+        let reparsed = parse(Cursor::new(&rewritten)).unwrap();
+
+        // Should have 4 events: 3 original + 1 marker
+        assert_eq!(reparsed.events.len(), 4);
+        assert_eq!(reparsed.markers.len(), 1);
+
+        // Original events preserved at same absolute times
+        let orig_times: Vec<f64> = original.events.iter().map(|e| e.time).collect();
+        let new_non_marker: Vec<f64> = reparsed
+            .events
+            .iter()
+            .filter(|e| e.event_type != EventType::Marker)
+            .map(|e| e.time)
+            .collect();
+        for (a, b) in orig_times.iter().zip(new_non_marker.iter()) {
+            assert!(
+                (a - b).abs() < 1e-9,
+                "original event time {a} != reparsed time {b}"
+            );
+        }
+
+        // Marker at the correct absolute time
+        assert!((reparsed.markers[0].time - 1.0).abs() < 1e-9);
+        assert_eq!(reparsed.markers[0].label, "mark");
+    }
+
+    #[test]
+    fn test_rewrite_round_trip_marker_after_last() {
+        // Round-trip when marker is appended after the last event.
+        let input = format!("{V3_HEADER}\n[0.5,\"o\",\"a\"]\n[0.5,\"o\",\"b\"]\n");
+
+        let original = parse(Cursor::new(&input)).unwrap();
+        let rewritten = rewrite_v3_with_marker(&input, 5.0, "end").unwrap();
+        let reparsed = parse(Cursor::new(&rewritten)).unwrap();
+
+        assert_eq!(reparsed.events.len(), 3);
+        assert_eq!(reparsed.markers.len(), 1);
+        assert!((reparsed.markers[0].time - 5.0).abs() < 1e-9);
+
+        // Original events preserved
+        for (orig, reparsed_evt) in original.events.iter().zip(
+            reparsed
+                .events
+                .iter()
+                .filter(|e| e.event_type != EventType::Marker),
+        ) {
+            assert!(
+                (orig.time - reparsed_evt.time).abs() < 1e-9,
+                "times differ: {} vs {}",
+                orig.time,
+                reparsed_evt.time
+            );
+        }
+    }
+
+    #[test]
+    fn test_rewrite_byte_identical_preservation() {
+        // Only the marker line and the immediately-following timestamped line
+        // should differ; all other lines must be byte-identical.
+        let input =
+            format!("{V3_HEADER}\n[0.5,\"o\",\"a\"]\n[0.5,\"o\",\"b\"]\n[0.5,\"o\",\"c\"]\n");
+        let output = rewrite_v3_with_marker(&input, 0.7, "mid").unwrap();
+
+        let in_lines: Vec<&str> = input.lines().collect();
+        let out_lines: Vec<&str> = output.lines().collect();
+
+        // Output has one extra line (the marker)
+        assert_eq!(out_lines.len(), in_lines.len() + 1);
+
+        // Header unchanged
+        assert_eq!(out_lines[0], in_lines[0]);
+        // First event unchanged
+        assert_eq!(out_lines[1], in_lines[1]);
+        // out_lines[2] = marker (new)
+        // out_lines[3] = patched second event (modified)
+        // out_lines[4] = third event — must be byte-identical to in_lines[3]
+        assert_eq!(out_lines[4], in_lines[3]);
+    }
+
+    #[test]
+    fn test_rewrite_malformed_between_events_with_unknown_types() {
+        // Mix of blank lines, malformed JSON, and unknown event types.
+        // Unknown type "z" at delta 0.3 advances time. Malformed/blank do not.
+        let input = format!(
+            "{V3_HEADER}\n[0.5,\"o\",\"a\"]\n\n{{bad}}\n[0.3,\"z\",\"unk\"]\n[0.2,\"o\",\"b\"]\n"
+        );
+        // Absolute times: event1=0.5, z=0.8, event2=1.0
+        // Insert marker at t=0.9 → between z (0.8) and event2 (1.0)
+        let output = rewrite_v3_with_marker(&input, 0.9, "m1").unwrap();
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        assert_eq!(out_lines.len(), 7);
+        assert_eq!(out_lines[0], V3_HEADER);
+        assert_eq!(out_lines[1], "[0.5,\"o\",\"a\"]");
+        assert_eq!(out_lines[2], ""); // blank preserved
+        assert_eq!(out_lines[3], "{bad}"); // malformed preserved
+        assert_eq!(out_lines[4], "[0.3,\"z\",\"unk\"]"); // unknown type preserved
+        assert_eq!(out_lines[5], "[0.1,\"m\",\"m1\"]"); // marker: 0.9 - 0.8 = 0.1
+        assert_eq!(out_lines[6], "[0.1,\"o\",\"b\"]"); // patched: 1.0 - 0.9 = 0.1
+    }
+
+    #[test]
+    fn test_rewrite_negative_delta_line_ignored() {
+        // A line with a negative delta does not advance absolute_time and is
+        // passed through unchanged.
+        let input =
+            format!("{V3_HEADER}\n[0.5,\"o\",\"a\"]\n[-0.1,\"o\",\"neg\"]\n[0.5,\"o\",\"b\"]\n");
+        // abs: event1=0.5, neg line ignored (not timestamped), event2=0.5+0.5=1.0
+        // Insert at t=0.7 → before event2
+        let output = rewrite_v3_with_marker(&input, 0.7, "mid").unwrap();
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        assert_eq!(out_lines.len(), 5);
+        assert_eq!(out_lines[1], "[0.5,\"o\",\"a\"]");
+        assert_eq!(out_lines[2], "[-0.1,\"o\",\"neg\"]"); // preserved unchanged
+        assert_eq!(out_lines[3], "[0.2,\"m\",\"mid\"]"); // marker: 0.7 - 0.5 = 0.2
+        assert_eq!(out_lines[4], "[0.3,\"o\",\"b\"]"); // patched: 1.0 - 0.7 = 0.3
+    }
+
+    #[test]
+    fn test_rewrite_two_element_array_not_timestamped() {
+        // A 2-element array is not a valid timestamped line (needs 3 elements).
+        let input = format!("{V3_HEADER}\n[0.5,\"o\",\"a\"]\n[0.5,\"o\"]\n[0.5,\"o\",\"b\"]\n");
+        // abs: event1=0.5, [0.5,"o"] ignored, event2=0.5+0.5=1.0
+        let output = rewrite_v3_with_marker(&input, 0.7, "mid").unwrap();
+
+        let out_lines: Vec<&str> = output.lines().collect();
+        assert_eq!(out_lines.len(), 5);
+        assert_eq!(out_lines[2], "[0.5,\"o\"]"); // preserved unchanged
+        assert_eq!(out_lines[3], "[0.2,\"m\",\"mid\"]");
+        assert_eq!(out_lines[4], "[0.3,\"o\",\"b\"]");
     }
 }

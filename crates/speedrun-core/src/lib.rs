@@ -57,8 +57,8 @@ pub mod timemap;
 
 pub use index::{KEYFRAME_INTERVAL, Keyframe, KeyframeIndex};
 pub use parser::{
-    Event, EventData, EventType, Header, Marker, ParseError, ParseWarning, Recording, feed_event,
-    parse, serialize_marker_event,
+    Event, EventData, EventType, Header, Marker, ParseError, ParseWarning, Recording, RewriteError,
+    feed_event, parse, rewrite_v3_with_marker, serialize_marker_event,
 };
 pub use player::{LoadOptions, Player, PlayerError};
 pub use search::SearchHit;
