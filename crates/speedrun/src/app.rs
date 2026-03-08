@@ -247,15 +247,15 @@ impl App {
         }
     }
 
-    /// Create the marker and append it to the file.
+    /// Create the marker and persist it to the file.
     fn execute_marker_creation(&mut self) {
         if let Some(write) = self.player.add_marker(String::new()) {
             match write {
                 speedrun_core::MarkerWrite::AppendLine(line) => {
                     self.append_marker_to_file(&line);
                 }
-                speedrun_core::MarkerWrite::RewriteFile { .. } => {
-                    unreachable!("v3 markers are blocked by version check above")
+                speedrun_core::MarkerWrite::RewriteFile { raw_time, label } => {
+                    self.rewrite_marker_to_file(raw_time, &label);
                 }
             }
         }
@@ -289,6 +289,34 @@ impl App {
                 self.marker_feedback = Some(Instant::now());
             }
             Err(e) => {
+                self.marker_error_feedback =
+                    Some((format!("Failed to write marker: {e}"), Instant::now()));
+            }
+        }
+    }
+
+    /// Rewrite a v3 .cast file to insert a marker via atomic rename.
+    fn rewrite_marker_to_file(&mut self, raw_time: f64, label: &str) {
+        let Some(ref path) = self.file_path else {
+            return;
+        };
+        let path = path.clone();
+        let tmp_path = path.with_extension("cast.tmp");
+        let result = (|| -> std::io::Result<()> {
+            let contents = std::fs::read_to_string(&path)?;
+            let rewritten = speedrun_core::rewrite_v3_with_marker(&contents, raw_time, label)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            std::fs::write(&tmp_path, rewritten.as_bytes())?;
+            std::fs::rename(&tmp_path, &path)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.marker_feedback = Some(Instant::now());
+            }
+            Err(e) => {
+                // Clean up temp file on failure (ignore errors)
+                let _ = std::fs::remove_file(&tmp_path);
                 self.marker_error_feedback =
                     Some((format!("Failed to write marker: {e}"), Instant::now()));
             }
@@ -489,8 +517,8 @@ impl App {
                         speedrun_core::MarkerWrite::AppendLine(line) => {
                             self.append_marker_to_file(&line);
                         }
-                        speedrun_core::MarkerWrite::RewriteFile { .. } => {
-                            unreachable!("v3 markers are blocked by version check above")
+                        speedrun_core::MarkerWrite::RewriteFile { raw_time, label } => {
+                            self.rewrite_marker_to_file(raw_time, &label);
                         }
                     }
                 }
@@ -721,14 +749,6 @@ impl App {
                     ));
                     return;
                 }
-                // V3 recordings not supported
-                if self.player.version() == 3 {
-                    self.marker_error_feedback = Some((
-                        "Cannot add marker: v3 recordings not supported".into(),
-                        Instant::now(),
-                    ));
-                    return;
-                }
                 // Capture time and pause
                 self.pending_marker_time = Some(self.player.current_time());
                 self.was_playing_before_marker = self.player.is_playing();
@@ -746,14 +766,6 @@ impl App {
                 if self.file_path.is_none() {
                     self.marker_error_feedback = Some((
                         "Cannot add marker: reading from stdin".into(),
-                        Instant::now(),
-                    ));
-                    return;
-                }
-                // V3 recordings not supported
-                if self.player.version() == 3 {
-                    self.marker_error_feedback = Some((
-                        "Cannot add marker: v3 recordings not supported".into(),
                         Instant::now(),
                     ));
                     return;
@@ -2425,21 +2437,15 @@ mod tests {
     }
 
     #[test]
-    fn test_m_on_v3_recording_shows_error() {
-        let player = load_player("minimal_v3.cast");
-        let mut app = App::new(
-            player,
-            true,
-            false,
-            Some(std::path::PathBuf::from("fake.cast")),
-        );
+    fn test_m_on_v3_recording_enters_confirm() {
+        let (mut app, _tmp) = make_marker_app("minimal_v3.cast");
+        assert!(!app.file_modify_confirmed);
 
         app.handle_action(Action::AddMarker);
 
-        assert_eq!(app.input_mode, InputMode::Normal);
-        assert!(app.marker_error_feedback.is_some());
-        let (msg, _) = app.marker_error_feedback.as_ref().unwrap();
-        assert!(msg.contains("v3"), "Error should mention v3, got: {msg}");
+        // V3 recordings should now enter the confirmation dialog (not show error)
+        assert_eq!(app.input_mode, InputMode::ConfirmFileModify);
+        assert!(!app.player.is_playing()); // paused
     }
 
     #[test]
@@ -2823,6 +2829,135 @@ mod tests {
             (new_marker.time - 5.0).abs() < 0.01,
             "Expected marker time near 5.0, got {}",
             new_marker.time
+        );
+    }
+
+    // ── V3 marker round-trip tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_v3_marker_round_trip_rewrite_and_reload() {
+        // 1. Copy minimal_v3.cast to a temp file
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_v3.cast");
+        std::fs::copy(testdata_path("minimal_v3.cast"), &path).unwrap();
+
+        // 2. Load player, seek to 1.2 (absolute time of 2nd event), add marker
+        let mut player = Player::load(std::fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(player.version(), 3);
+        assert!(player.markers().is_empty());
+
+        // minimal_v3.cast deltas: 0.5, 0.7, 0.8, 0.9
+        // Absolute times: 0.5, 1.2, 2.0, 2.9
+        player.seek(1.2);
+        let write = player.add_marker("v3-test".into()).unwrap();
+        let speedrun_core::MarkerWrite::RewriteFile { raw_time, label } = write else {
+            panic!("expected RewriteFile for v3, got {write:?}");
+        };
+        assert_eq!(label, "v3-test");
+        assert!(
+            (raw_time - 1.2).abs() < 0.01,
+            "expected raw_time ~1.2, got {raw_time}"
+        );
+
+        // 3. Perform the rewrite via App's method
+        let mut app = App::new(player, true, false, Some(path.clone()));
+        app.file_modify_confirmed = true;
+        app.rewrite_marker_to_file(raw_time, &label);
+        assert!(
+            app.marker_feedback.is_some(),
+            "marker_feedback should be set on success"
+        );
+        assert!(
+            app.marker_error_feedback.is_none(),
+            "marker_error_feedback should be None on success"
+        );
+
+        // 4. Verify the file was rewritten with a marker event
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            contents.contains("\"m\""),
+            "Rewritten file should contain a marker event"
+        );
+
+        // 5. Reload from disk and verify marker is present
+        let player2 = Player::load(std::fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(player2.markers().len(), 1);
+        let marker = &player2.markers()[0];
+        assert_eq!(marker.label, "v3-test");
+        assert!(
+            (marker.time - 1.2).abs() < 0.01,
+            "Expected marker at effective time ~1.2, got {}",
+            marker.time
+        );
+    }
+
+    #[test]
+    fn test_v3_two_markers_in_sequence() {
+        // 1. Copy minimal_v3.cast to a temp file
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_v3_two.cast");
+        std::fs::copy(testdata_path("minimal_v3.cast"), &path).unwrap();
+
+        // 2. Load player, add first marker at t=0.5
+        let mut player = Player::load(std::fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(player.version(), 3);
+        player.seek(0.5);
+        let write1 = player.add_marker("first".into()).unwrap();
+        let speedrun_core::MarkerWrite::RewriteFile {
+            raw_time: raw1,
+            label: label1,
+        } = write1
+        else {
+            panic!("expected RewriteFile");
+        };
+
+        // Rewrite file with first marker
+        let mut app = App::new(player, true, false, Some(path.clone()));
+        app.file_modify_confirmed = true;
+        app.rewrite_marker_to_file(raw1, &label1);
+        assert!(app.marker_feedback.is_some());
+
+        // 3. Reload and add second marker at t=2.0
+        let mut player2 = Player::load(std::fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(player2.markers().len(), 1); // first marker present
+        player2.seek(2.0);
+        let write2 = player2.add_marker("second".into()).unwrap();
+        let speedrun_core::MarkerWrite::RewriteFile {
+            raw_time: raw2,
+            label: label2,
+        } = write2
+        else {
+            panic!("expected RewriteFile");
+        };
+
+        // Rewrite file with second marker
+        let mut app2 = App::new(player2, true, false, Some(path.clone()));
+        app2.file_modify_confirmed = true;
+        app2.rewrite_marker_to_file(raw2, &label2);
+        assert!(app2.marker_feedback.is_some());
+
+        // 4. Reload and verify both markers are present
+        let player3 = Player::load(std::fs::File::open(&path).unwrap()).unwrap();
+        let markers = player3.markers();
+        assert_eq!(
+            markers.len(),
+            2,
+            "Should have 2 markers, got {}",
+            markers.len()
+        );
+
+        // Markers should be sorted by time
+        assert_eq!(markers[0].label, "first");
+        assert!(
+            (markers[0].time - 0.5).abs() < 0.01,
+            "Expected first marker at ~0.5, got {}",
+            markers[0].time
+        );
+        assert_eq!(markers[1].label, "second");
+        assert!(
+            (markers[1].time - 2.0).abs() < 0.01,
+            "Expected second marker at ~2.0, got {}",
+            markers[1].time
         );
     }
 }
