@@ -403,14 +403,14 @@ impl Player {
 
     /// Set the playback speed multiplier.
     ///
-    /// Valid range: 0.25 to 4.0. Values outside the range are clamped.
+    /// Valid range: 0.25 to 20.0. Values outside the range are clamped.
     /// NaN and negative-infinite values reset to 1.0.
-    /// Positive-infinite values are clamped to the maximum (4.0).
+    /// Positive-infinite values are clamped to the maximum (20.0).
     pub fn set_speed(&mut self, speed: f64) {
         if speed.is_nan() || speed == f64::NEG_INFINITY {
             self.speed = 1.0;
         } else {
-            self.speed = speed.clamp(0.25, 4.0);
+            self.speed = speed.clamp(0.25, 20.0);
         }
     }
 
@@ -1426,8 +1426,8 @@ mod tests {
     #[test]
     fn test_set_speed_clamp_high() {
         let mut player = load_file("minimal_v2.cast");
-        player.set_speed(10.0);
-        assert_f64_eq(player.speed(), 4.0);
+        player.set_speed(25.0);
+        assert_f64_eq(player.speed(), 20.0);
     }
 
     #[test]
@@ -1448,7 +1448,7 @@ mod tests {
     fn test_set_speed_infinity() {
         let mut player = load_file("minimal_v2.cast");
         player.set_speed(f64::INFINITY);
-        assert_f64_eq(player.speed(), 4.0);
+        assert_f64_eq(player.speed(), 20.0);
     }
 
     #[test]
@@ -1475,8 +1475,22 @@ mod tests {
     #[test]
     fn test_set_speed_boundary_high() {
         let mut player = load_file("minimal_v2.cast");
-        player.set_speed(4.0);
-        assert_f64_eq(player.speed(), 4.0);
+        player.set_speed(20.0);
+        assert_f64_eq(player.speed(), 20.0);
+    }
+
+    #[test]
+    fn test_set_speed_10x() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(10.0);
+        assert_f64_eq(player.speed(), 10.0);
+    }
+
+    #[test]
+    fn test_set_speed_20x() {
+        let mut player = load_file("minimal_v2.cast");
+        player.set_speed(20.0);
+        assert_f64_eq(player.speed(), 20.0);
     }
 
     // -----------------------------------------------------------------------
