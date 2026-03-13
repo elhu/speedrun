@@ -344,7 +344,7 @@ When the user's terminal is wider than the controls need, the bar is centered wi
 
 **End of recording:** playback auto-pauses. The state icon changes to `■`. The controls bar appears (if hidden). The user can seek backward, restart with `0`, or quit.
 
-**Speed cycling:** speeds follow a fixed set: `0.25×`, `0.5×`, `1×`, `1.5×`, `2×`, `4×`. `+`/`=` moves up the list, `-` moves down. Wrapping: hitting `+` at `4×` stays at `4×`; hitting `-` at `0.25×` stays at `0.25×`.
+**Speed cycling:** speeds follow a fixed set: `0.25×`, `0.5×`, `1×`, `1.5×`, `2×`, `4×`, `10×`, `20×`, `30×`. `+`/`=` moves up the list, `-` moves down. Wrapping: hitting `+` at `30×` stays at `30×`; hitting `-` at `0.25×` stays at `0.25×`.
 
 **Seeking boundary behavior:** seeking before `0` clamps to `0`. Seeking past the end clamps to the final event and auto-pauses.
 
@@ -357,7 +357,7 @@ When the user's terminal is wider than the controls need, the bar is centered wi
 | Key | Action |
 |---|---|
 | `Space` | Toggle play / pause |
-| `+` or `=` | Speed up (next in 0.25× → 0.5× → 1× → 1.5× → 2× → 4×) |
+| `+` or `=` | Speed up (next in 0.25× → 0.5× → 1× → 1.5× → 2× → 4× → 10× → 20× → 30×) |
 | `-` | Slow down (previous in the same set) |
 
 **Navigation**

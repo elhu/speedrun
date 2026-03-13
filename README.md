@@ -11,7 +11,7 @@ speedrun would not exist without [asciinema](https://asciinema.org/). The asciin
 - **Instant seeking** -- jump to any point in a recording with fast keyframe-based seeking
 - **Scrubbing** -- arrow keys and percent jumps for fluid navigation
 - **Frame stepping** -- advance or rewind one output event at a time
-- **Speed control** -- adjustable playback speed from 0.25x to 8x
+- **Speed control** -- adjustable playback speed from 0.25x to 30x
 - **Idle compression** -- cap long pauses with configurable idle time limits
 - **Text search** -- search through terminal output and jump between matches
 - **Marker navigation** -- jump between named markers embedded in the recording

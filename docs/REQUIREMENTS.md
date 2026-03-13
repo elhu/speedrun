@@ -384,7 +384,7 @@ Implement the `Player` struct with seeking, playback, and the full public API.
 
 **Playback control:**
 - `play()`, `pause()`, `toggle()`, `is_playing()` — standard state machine.
-- `set_speed(speed)`, `speed()` — speed multiplier. Valid range: 0.25 to 4.0. Values outside range are clamped.
+- `set_speed(speed)`, `speed()` — speed multiplier. Valid range: 0.25 to 30.0. Values outside range are clamped.
 - `tick(dt)` — advance playback by `dt` wall-clock seconds (scaled by speed). Returns `true` if terminal state changed. Auto-pauses at end of recording.
 - `time_to_next_event()` — effective-time gap to next event, scaled by speed. Returns `None` if paused or at end.
 
@@ -411,7 +411,7 @@ Implement the `Player` struct with seeking, playback, and the full public API.
 **Error handling:**
 - All load errors are typed and descriptive.
 - Seeking/stepping on an unloaded player is not possible (Player is only constructed via load).
-- Speed values outside [0.25, 4.0] are clamped, not errored.
+- Speed values outside [0.25, 30.0] are clamped, not errored.
 
 **Tests:**
 - Unit: Load `minimal_v2.cast`, verify duration, size, event traversal via tick.
@@ -583,7 +583,7 @@ Implement all remaining keybindings from the spec.
 **Requirements:**
 
 **Speed control:**
-- `+` or `=` — speed up (next in: 0.25×, 0.5×, 1×, 1.5×, 2×, 4×). Clamp at 4×.
+- `+` or `=` — speed up (next in: 0.25×, 0.5×, 1×, 1.5×, 2×, 4×, 10×, 20×, 30×). Clamp at 30×.
 - `-` — slow down (previous in same set). Clamp at 0.25×.
 
 **Navigation:**
@@ -640,7 +640,7 @@ Implement the `?` help overlay.
 - [ ] Controls auto-hide after 2s during playback, show on pause/interaction/end.
 - [ ] `Tab` toggles controls. `--no-controls` starts hidden.
 - [ ] All keybindings from the spec are functional.
-- [ ] Speed cycling works through the full set (0.25× to 4×).
+- [ ] Speed cycling works through the full set (0.25× to 30×).
 - [ ] Marker navigation jumps correctly.
 - [ ] Percentage jumps (0-9 keys) land at correct positions.
 - [ ] Help overlay shows/dismisses correctly, pauses/resumes playback.
