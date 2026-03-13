@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 type Tui = Terminal<CrosstermBackend<std::io::Stdout>>;
 
-const SPEED_STEPS: &[f64] = &[0.25, 0.5, 1.0, 1.5, 2.0, 4.0, 10.0, 20.0];
+const SPEED_STEPS: &[f64] = &[0.25, 0.5, 1.0, 1.5, 2.0, 4.0, 10.0, 20.0, 30.0];
 
 /// Find the next speed step in the given direction.
 ///
@@ -1145,7 +1145,7 @@ mod tests {
 
     #[test]
     fn next_speed_up_clamps_at_max() {
-        assert!((next_speed(20.0, 1) - 20.0).abs() < 1e-9);
+        assert!((next_speed(30.0, 1) - 30.0).abs() < 1e-9);
     }
 
     #[test]
@@ -1172,7 +1172,7 @@ mod tests {
 
     #[test]
     fn next_speed_down_from_max() {
-        assert!((next_speed(20.0, -1) - 10.0).abs() < 1e-9);
+        assert!((next_speed(30.0, -1) - 20.0).abs() < 1e-9);
     }
 
     #[test]
@@ -1186,8 +1186,18 @@ mod tests {
     }
 
     #[test]
+    fn next_speed_up_from_20x() {
+        assert!((next_speed(20.0, 1) - 30.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn next_speed_down_from_30x() {
+        assert!((next_speed(30.0, -1) - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn next_speed_full_cycle_up() {
-        let expected = [0.25, 0.5, 1.0, 1.5, 2.0, 4.0, 10.0, 20.0, 20.0];
+        let expected = [0.25, 0.5, 1.0, 1.5, 2.0, 4.0, 10.0, 20.0, 30.0, 30.0];
         let mut current = 0.25;
         for &exp in &expected[1..] {
             current = next_speed(current, 1);
@@ -1200,8 +1210,8 @@ mod tests {
 
     #[test]
     fn next_speed_full_cycle_down() {
-        let expected = [20.0, 10.0, 4.0, 2.0, 1.5, 1.0, 0.5, 0.25, 0.25];
-        let mut current = 20.0;
+        let expected = [30.0, 20.0, 10.0, 4.0, 2.0, 1.5, 1.0, 0.5, 0.25, 0.25];
+        let mut current = 30.0;
         for &exp in &expected[1..] {
             current = next_speed(current, -1);
             assert!(
